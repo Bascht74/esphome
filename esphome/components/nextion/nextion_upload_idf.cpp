@@ -63,7 +63,7 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
     App.feed_wdt();
     const uint16_t buffer_size =
         this->content_length_ < 4096 ? this->content_length_ : 4096;  // Limits buffer to the remaining data
-    ESP_LOGV(TAG, "Fetch %" PRIu16 " bytes", buffer_size);
+    ESP_LOGV(TAG, "Fetching %" PRIu16 " bytes", buffer_size);
     uint16_t read_len = 0;
     int partial_read_len = 0;
     uint8_t retries = 0;
