@@ -22,7 +22,7 @@ static const char *const TAG = "nextion.upload.idf";
 int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &range_start) {
   uint32_t range_size = this->tft_size_ - range_start;
   ESP_LOGV(TAG, "Heap: %" PRIu32, esp_get_free_heap_size());
-  uint32_t range_end = ((upload_first_chunk_sent_ or this->tft_size_ < 2048) ? this->tft_size_ : 2048) - 1;
+  uint32_t range_end = ((upload_first_chunk_sent_ or this->tft_size_ < 4096) ? this->tft_size_ : 4096) - 1;
   ESP_LOGD(TAG, "Range start: %" PRIu32, range_start);
   if (range_size <= 0 or range_end <= range_start) {
     ESP_LOGD(TAG, "Range end: %" PRIu32, range_end);
@@ -52,7 +52,7 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
 
   // Allocate the buffer dynamically
   RAMAllocator<uint8_t> allocator;
-  uint8_t *buffer = allocator.allocate(2048);
+  uint8_t *buffer = allocator.allocate(4096);
   if (!buffer) {
     ESP_LOGE(TAG, "Buffer alloc failed");
     return -1;
@@ -62,7 +62,7 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
   while (true) {
     App.feed_wdt();
     const uint16_t buffer_size =
-        this->content_length_ < 2048 ? this->content_length_ : 2048;  // Limits buffer to the remaining data
+        this->content_length_ < 4096 ? this->content_length_ : 4096;  // Limits buffer to the remaining data
     ESP_LOGV(TAG, "Fetching %" PRIu16 " bytes", buffer_size);
     uint16_t read_len = 0;
     int partial_read_len = 0;
@@ -75,10 +75,11 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
         read_len += partial_read_len;  // Accumulate the total read length.
         // Reset retries on successful read.
         retries = 0;
+        vTaskDelay(pdMS_TO_TICKS(1000));  // NOLINT
       } else {
         // If no data was read, increment retries.
         retries++;
-        vTaskDelay(pdMS_TO_TICKS(3));  // NOLINT
+        vTaskDelay(pdMS_TO_TICKS(1000));  // NOLINT
       }
       App.feed_wdt();  // Feed the watchdog timer.
     }
@@ -86,18 +87,18 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
       // Did not receive the full package within the timeout period
       ESP_LOGE(TAG, "Read failed: %" PRIu16 "/%" PRIu16 " bytes", read_len, buffer_size);
       // Deallocate buffer
-      allocator.deallocate(buffer, 2048);
+      allocator.deallocate(buffer, 4096);
       buffer = nullptr;
       return -1;
     }
     ESP_LOGV(TAG, "Fetched %d bytes", read_len);
     vTaskDelay(pdMS_TO_TICKS(1000));  // NOLINT
     if (read_len > 0) {
-//      recv_string.clear();
-//      this->write_array(buffer, buffer_size);
+      recv_string.clear();
+      this->write_array(buffer, buffer_size);
       App.feed_wdt();
-//      this->recv_ret_string_(recv_string, upload_first_chunk_sent_ ? 500 : 5000, true);
-//      this->content_length_ -= read_len;
+      this->recv_ret_string_(recv_string, upload_first_chunk_sent_ ? 500 : 5000, true);
+      this->content_length_ -= read_len;
       const float upload_percentage = 100.0f * (this->tft_size_ - this->content_length_) / this->tft_size_;
 #ifdef USE_PSRAM
       ESP_LOGD(TAG, "Upload: %0.2f%% (%" PRIu32 " left, heap: %" PRIu32 "+%" PRIu32 ")", upload_percentage,
@@ -107,36 +108,35 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
       ESP_LOGD(TAG, "Upload: %0.2f%% (%" PRIu32 " left, heap: %" PRIu32 ")", upload_percentage, this->content_length_,
                static_cast<uint32_t>(esp_get_free_heap_size()));
 #endif
-//      upload_first_chunk_sent_ = true;
-//      if (recv_string[0] == 0x08 && recv_string.size() == 5) {  // handle partial upload request
-//        ESP_LOGD(TAG, "Recv: [%s]",
-//                 format_hex_pretty(reinterpret_cast<const uint8_t *>(recv_string.data()), recv_string.size()).c_str());
-//        uint32_t result = 0;
-//        for (int j = 0; j < 4; ++j) {
-//          result += static_cast<uint8_t>(recv_string[j + 1]) << (8 * j);
-//        }
-//        if (result > 0) {
-//          ESP_LOGI(TAG, "New range: %" PRIu32, result);
-//          this->content_length_ = this->tft_size_ - result;
-//          range_start = result;
-//        } else {
-//          range_start = range_end + 1;
-//        }
+      upload_first_chunk_sent_ = true;
+      if (recv_string[0] == 0x08 && recv_string.size() == 5) {  // handle partial upload request
+        ESP_LOGD(TAG, "Recv: [%s]",
+                 format_hex_pretty(reinterpret_cast<const uint8_t *>(recv_string.data()), recv_string.size()).c_str());
+        uint32_t result = 0;
+        for (int j = 0; j < 4; ++j) {
+          result += static_cast<uint8_t>(recv_string[j + 1]) << (8 * j);
+        }
+        if (result > 0) {
+          ESP_LOGI(TAG, "New range: %" PRIu32, result);
+          this->content_length_ = this->tft_size_ - result;
+          range_start = result;
+        } else {
+          range_start = range_end + 1;
+        }
         // Deallocate buffer
-        allocator.deallocate(buffer, 2048);
+        allocator.deallocate(buffer, 4096);
         buffer = nullptr;
         return range_end + 1;
-//      }
-//      else if (recv_string[0] != 0x05 and recv_string[0] != 0x08) {  // 0x05 == "ok"
-//        ESP_LOGE(TAG, "Invalid response: [%s]",
-//                 format_hex_pretty(reinterpret_cast<const uint8_t *>(recv_string.data()), recv_string.size()).c_str());
+      } else if (recv_string[0] != 0x05 and recv_string[0] != 0x08) {  // 0x05 == "ok"
+        ESP_LOGE(TAG, "Invalid response: [%s]",
+                 format_hex_pretty(reinterpret_cast<const uint8_t *>(recv_string.data()), recv_string.size()).c_str());
         // Deallocate buffer
-//        allocator.deallocate(buffer, 2048);
-//        buffer = nullptr;
-//        return -1;
-//      }
+        allocator.deallocate(buffer, 4096);
+        buffer = nullptr;
+        return -1;
+      }
 
-//      recv_string.clear();
+      recv_string.clear();
     } else if (read_len == 0) {
       ESP_LOGV(TAG, "HTTP end");
       break;  // Exit the loop if there is no more data to read
@@ -147,7 +147,7 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
   }
   range_start = range_end + 1;
   // Deallocate buffer
-  allocator.deallocate(buffer, 2048);
+  allocator.deallocate(buffer, 4096);
   buffer = nullptr;
   return range_end + 1;
 }
@@ -232,7 +232,7 @@ bool Nextion::upload_tft(uint32_t baud_rate, bool exit_reparse) {
   this->tft_size_ = esp_http_client_get_content_length(http_client);
 
   ESP_LOGD(TAG, "TFT size: %zu bytes", this->tft_size_);
-  if (this->tft_size_ < 2048 || this->tft_size_ > 134217728) {
+  if (this->tft_size_ < 4096 || this->tft_size_ > 134217728) {
     ESP_LOGE(TAG, "Size check failed");
     ESP_LOGD(TAG, "Close HTTP");
     esp_http_client_close(http_client);
