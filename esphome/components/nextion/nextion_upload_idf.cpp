@@ -59,6 +59,11 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
   }
 
   std::string recv_string;
+
+    // erhöht TWDT auf 30s (global)
+  esp_task_wdt_init(30, true);
+  esp_task_wdt_add(NULL); // aktuellen Task dem WDT hinzufügen
+  
   while (true) {
     App.feed_wdt();
     const uint16_t buffer_size =
@@ -150,6 +155,10 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
   allocator.deallocate(buffer, 4096);
   buffer = nullptr;
   return range_end + 1;
+
+    // wieder zurücksetzen (z.B. 5s)
+  esp_task_wdt_init(5, true);
+  esp_task_wdt_add(NULL);
 }
 
 bool Nextion::upload_tft(uint32_t baud_rate, bool exit_reparse) {
