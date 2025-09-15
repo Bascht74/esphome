@@ -1,5 +1,5 @@
 #include "nextion.h"
-#include "esp_task_wdt.h"
+#include <esp_task_wdt.h>
 
 #ifdef USE_NEXTION_TFT_UPLOAD
 #ifdef USE_ESP_IDF
