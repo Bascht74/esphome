@@ -75,7 +75,8 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
         read_len += partial_read_len;  // Accumulate the total read length.
         // Reset retries on successful read.
         retries = 0;
-        vTaskDelay(pdMS_TO_TICKS(30));  // NOLINT
+        ESP_LOGE(TAG, "Read: %" PRIu16 "/%" PRIu16 " bytes", read_len, buffer_size);
+        vTaskDelay(pdMS_TO_TICKS(200));  // NOLINT
       } else {
         // If no data was read, increment retries.
         retries++;
