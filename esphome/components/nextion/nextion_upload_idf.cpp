@@ -75,10 +75,11 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
         read_len += partial_read_len;  // Accumulate the total read length.
         // Reset retries on successful read.
         retries = 0;
+        vTaskDelay(pdMS_TO_TICKS(30));  // NOLINT
       } else {
         // If no data was read, increment retries.
         retries++;
-        vTaskDelay(pdMS_TO_TICKS(60));  // NOLINT
+        vTaskDelay(pdMS_TO_TICKS(1000));  // NOLINT
       }
       App.feed_wdt();  // Feed the watchdog timer.
     }
