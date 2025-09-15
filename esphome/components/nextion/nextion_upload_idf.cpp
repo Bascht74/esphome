@@ -66,6 +66,8 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
   
   while (true) {
     App.feed_wdt();
+    yield();
+    
     const uint16_t buffer_size =
         this->content_length_ < 4096 ? this->content_length_ : 4096;  // Limits buffer to the remaining data
     ESP_LOGV(TAG, "Fetching %" PRIu16 " bytes", buffer_size);
@@ -80,12 +82,13 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
         read_len += partial_read_len;  // Accumulate the total read length.
         // Reset retries on successful read.
         retries = 0;
-        vTaskDelay(pdMS_TO_TICKS(1000));  // NOLINT
       } else {
         // If no data was read, increment retries.
         retries++;
-        vTaskDelay(pdMS_TO_TICKS(1000));  // NOLINT
+        vTaskDelay(pdMS_TO_TICKS(100));  // NOLINT
       }
+      App.feed_wdt();  // Feed the watchdog timer.
+      yield();
       App.feed_wdt();  // Feed the watchdog timer.
     }
     if (read_len != buffer_size) {
@@ -97,7 +100,8 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
       return -1;
     }
     ESP_LOGV(TAG, "Fetched %d bytes", read_len);
-    vTaskDelay(pdMS_TO_TICKS(1000));  // NOLINT
+    vTaskDelay(pdMS_TO_TICKS(100));  // NOLINT
+    yield();
     if (read_len > 0) {
       recv_string.clear();
       this->write_array(buffer, buffer_size);
