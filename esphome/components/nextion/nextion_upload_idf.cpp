@@ -84,8 +84,6 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
         vTaskDelay(pdMS_TO_TICKS(100));  // NOLINT
       }
       App.feed_wdt();  // Feed the watchdog timer.
-      yield();
-      App.feed_wdt();  // Feed the watchdog timer.
     }
     if (read_len != buffer_size) {
       // Did not receive the full package within the timeout period
@@ -96,8 +94,6 @@ int Nextion::upload_by_chunks_(esp_http_client_handle_t http_client, uint32_t &r
       return -1;
     }
     ESP_LOGV(TAG, "Fetched %d bytes", read_len);
-    vTaskDelay(pdMS_TO_TICKS(100));  // NOLINT
-    yield();
     if (read_len > 0) {
       recv_string.clear();
       this->write_array(buffer, buffer_size);
