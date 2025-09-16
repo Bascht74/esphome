@@ -199,7 +199,7 @@ bool Nextion::upload_tft(uint32_t baud_rate, bool exit_reparse) {
       .url = this->tft_url_.c_str(),
       .cert_pem = nullptr,
       .method = HTTP_METHOD_HEAD,
-      .timeout_ms = 15000,
+      .timeout_ms = 4000,
       .disable_auto_redirect = false,
       .max_redirection_count = 10,
   };
