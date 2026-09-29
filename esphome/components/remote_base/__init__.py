@@ -755,6 +755,8 @@ KEELOQ_SCHEMA = cv.Schema(
             cv.Range(min=0, max=0x10),
         ),
         cv.Optional(CONF_LEVEL, default=False): cv.boolean,
+        cv.Optional("suffix", default=0): cv.All(cv.hex_int, cv.Range(min=0, max=0xFFFF)),
+        cv.Optional("suffix_bits", default=0): cv.int_range(min=0, max=16),
     }
 )
 
@@ -792,6 +794,10 @@ async def keeloq_action(var, config, args):
     cg.add(var.set_command(template_))
     template_ = await cg.templatable(config[CONF_LEVEL], args, bool)
     cg.add(var.set_vlow(template_))
+    template_ = await cg.templatable(config["suffix"], args, cg.uint16)
+    cg.add(var.set_suffix(template_))
+    template_ = await cg.templatable(config["suffix_bits"], args, cg.uint8)
+    cg.add(var.set_suffix_bits(template_))
 
 
 # NEC
