@@ -12,6 +12,7 @@
 #include "lwip/dns.h"
 #include "lwip/ip4_addr.h"
 #else
+#include <arpa/inet.h>
 #include <netdb.h>
 #endif
 
@@ -28,6 +29,20 @@ static void consume_buf(uint8_t *buf, size_t *len, size_t n) {
   *len -= n;
 }
 
+static void format_u32_ipv4(uint32_t raw, char *dest, size_t dest_len) {
+#if defined(USE_HOST) || defined(USE_ZEPHYR)
+  struct in_addr addr{};
+  addr.s_addr = raw;
+  if (inet_ntop(AF_INET, &addr, dest, dest_len) == nullptr) {
+    dest[0] = '\0';
+  }
+#else
+  ip4_addr_t addr;
+  ip4_addr_set_u32(&addr, raw);
+  ip4addr_ntoa_r(&addr, dest, static_cast<int>(dest_len));
+#endif
+}
+
 void TcpUart::setup() {
   // The first attempt must not wait out a full interval.
   this->last_attempt_ms_ = App.get_loop_component_start_time() - this->reconnect_interval_ms_;
@@ -37,15 +52,33 @@ void TcpUart::setup() {
 }
 
 void TcpUart::dump_config() {
-  ESP_LOGCONFIG(TAG,
-                "TCP UART:\n"
-                "  Host: %s:%u\n"
-                "  Reconnect Interval: %" PRIu32 "ms",
-                this->host_.c_str(), this->port_, this->reconnect_interval_ms_);
+  if (this->server_) {
+    ESP_LOGCONFIG(TAG,
+                  "TCP UART:\n"
+                  "  Role: %s\n"
+                  "  Listen: %u\n"
+                  "  Reconnect Interval: %" PRIu32 "ms",
+                  LOG_STR_LITERAL("server"), this->port_, this->reconnect_interval_ms_);
+  } else {
+    ESP_LOGCONFIG(TAG,
+                  "TCP UART:\n"
+                  "  Role: %s\n"
+                  "  Host: %s:%u\n"
+                  "  Reconnect Interval: %" PRIu32 "ms",
+                  LOG_STR_LITERAL("client"), this->host_.c_str(), this->port_, this->reconnect_interval_ms_);
+  }
   LOG_BINARY_SENSOR("  ", "Connected", this->connected_sensor_);
+  for (uint8_t i = 0; i < this->allowed_count_; i++) {
+    char buf[16];
+    format_u32_ipv4(this->allowed_[i], buf, sizeof(buf));
+    ESP_LOGCONFIG(TAG, "  Allowed: %s", buf);
+  }
 }
 
-void TcpUart::on_shutdown() { this->close_sock_(); }
+void TcpUart::on_shutdown() {
+  this->close_sock_();
+  this->listen_.reset();
+}
 
 void TcpUart::set_link_up_(bool up) {
   if (this->connected_ == up) {
@@ -87,6 +120,76 @@ void TcpUart::apply_socket_options_(socket::Socket *sock) {
   sock->setsockopt(IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
   sock->setsockopt(IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
 #endif
+}
+
+void TcpUart::add_allowed(const char *host) {
+  if (this->allowed_count_ >= MAX_ALLOWED) {
+    ESP_LOGW(TAG, "Ignored allowed host %s", host);
+    return;
+  }
+  struct sockaddr_storage addr;
+  if (socket::set_sockaddr(reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr), host, 0) == 0 ||
+      addr.ss_family != AF_INET) {
+    ESP_LOGW(TAG, "Ignored allowed host %s", host);
+    return;
+  }
+  this->allowed_[this->allowed_count_++] = reinterpret_cast<struct sockaddr_in *>(&addr)->sin_addr.s_addr;
+}
+
+bool TcpUart::peer_allowed_(const struct sockaddr *addr) const {
+  if (this->allowed_count_ == 0) {
+    return true;
+  }
+  if (addr == nullptr || addr->sa_family != AF_INET) {
+    return false;
+  }
+  uint32_t ip = reinterpret_cast<const struct sockaddr_in *>(addr)->sin_addr.s_addr;
+  for (uint8_t i = 0; i < this->allowed_count_; i++) {
+    if (this->allowed_[i] == ip) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void TcpUart::try_listen_() {
+  this->listen_ = socket::socket_ip_loop_monitored(SOCK_STREAM, IPPROTO_TCP);
+  if (this->listen_ == nullptr) {
+    this->note_attempt_();
+    return;
+  }
+  int yes = 1;
+  this->listen_->setsockopt(SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  this->listen_->setblocking(false);
+  struct sockaddr_storage local;
+  socklen_t local_len =
+      socket::set_sockaddr_any(reinterpret_cast<struct sockaddr *>(&local), sizeof(local), this->port_);
+  if (local_len == 0 || this->listen_->bind(reinterpret_cast<struct sockaddr *>(&local), local_len) != 0 ||
+      this->listen_->listen(1) != 0) {
+    ESP_LOGW(TAG, "Listen on %u failed", this->port_);
+    this->listen_.reset();
+    this->note_attempt_();
+    return;
+  }
+  ESP_LOGI(TAG, "Listening on %u", this->port_);
+}
+
+void TcpUart::accept_client_() {
+  struct sockaddr_storage peer;
+  socklen_t peer_len = sizeof(peer);
+  auto client = this->listen_->accept_loop_monitored(reinterpret_cast<struct sockaddr *>(&peer), &peer_len);
+  if (client == nullptr) {
+    return;
+  }
+  if (!this->peer_allowed_(reinterpret_cast<struct sockaddr *>(&peer))) {
+    ESP_LOGW(TAG, "Rejected TCP peer");
+    client->close();
+    return;
+  }
+  this->apply_socket_options_(client.get());
+  this->sock_ = std::move(client);
+  this->set_link_up_(true);
+  ESP_LOGI(TAG, "Client connected");
 }
 
 #if !defined(USE_HOST) && !defined(USE_ZEPHYR)
@@ -276,10 +379,17 @@ void TcpUart::flush_tx_() {
 }
 
 void TcpUart::loop() {
-  if (this->sock_ == nullptr) {
-    if (!this->in_backoff_()) {
-      this->try_connect_();
+  if (this->server_) {
+    if (this->listen_ == nullptr && !this->in_backoff_()) {
+      this->try_listen_();
     }
+    if (this->sock_ == nullptr && this->listen_ != nullptr && this->listen_->ready()) {
+      this->accept_client_();
+    }
+  } else if (this->sock_ == nullptr && !this->in_backoff_()) {
+    this->try_connect_();
+  }
+  if (this->sock_ == nullptr) {
     return;
   }
   if (this->connecting_ || this->rx_pending_ || this->sock_->ready()) {

@@ -18,13 +18,16 @@
 
 namespace esphome::tcp_uart {
 
-/// TCP client presented as a UART. Bytes are copied unchanged.
+/// TCP socket presented as a UART. Bytes are copied unchanged.
+/// role server listens and keeps one client.
 class TcpUart : public uart::UARTComponent, public Component {
  public:
   void set_host(const char *host) { this->host_ = StringRef(host); }
   void set_port(uint16_t port) { this->port_ = port; }
+  void set_server(bool server) { this->server_ = server; }
   void set_reconnect_interval(uint32_t ms) { this->reconnect_interval_ms_ = ms; }
   void set_connected_sensor(binary_sensor::BinarySensor *sensor) { this->connected_sensor_ = sensor; }
+  void add_allowed(const char *host);
 
   void setup() override;
   void loop() override;
@@ -45,6 +48,9 @@ class TcpUart : public uart::UARTComponent, public Component {
  protected:
   void check_logger_conflict() override {}
   void close_sock_();
+  void try_listen_();
+  void accept_client_();
+  bool peer_allowed_(const struct sockaddr *addr) const;
   void try_resolve_();
   bool ip_ready_();
   void try_connect_();
@@ -68,18 +74,22 @@ class TcpUart : public uart::UARTComponent, public Component {
   static constexpr size_t RX_BUFFER_SIZE = 1024;
   static constexpr size_t TX_BUFFER_SIZE = 1024;
   static constexpr size_t READ_CHUNK = 128;
+  static constexpr size_t MAX_ALLOWED = 4;
 
   // 4-byte members, then the port, then the flags, then the byte buffers.
   StringRef host_;
   std::unique_ptr<socket::Socket> sock_;
+  std::unique_ptr<socket::ListenSocket> listen_;
   binary_sensor::BinarySensor *connected_sensor_{nullptr};
   uint32_t last_attempt_ms_{0};
   uint32_t last_drop_log_ms_{0};
   uint32_t reconnect_interval_ms_{5000};
   size_t tx_len_{0};
   std::atomic<uint32_t> resolved_addr_{0};
+  uint32_t allowed_[MAX_ALLOWED]{};
 
   uint16_t port_{0};
+  bool server_{false};
   bool connecting_{false};
   bool connected_{false};
   bool offline_drop_logged_{false};
@@ -89,6 +99,7 @@ class TcpUart : public uart::UARTComponent, public Component {
   std::atomic<uint8_t> resolving_{0};
   std::atomic<uint8_t> resolve_failed_{0};
   std::atomic<uint8_t> have_addr_{0};
+  uint8_t allowed_count_{0};
   char resolved_ip_[socket::SOCKADDR_STR_LEN]{};
   StaticRingBuffer<uint8_t, RX_BUFFER_SIZE> rx_;
   uint8_t tx_[TX_BUFFER_SIZE]{};

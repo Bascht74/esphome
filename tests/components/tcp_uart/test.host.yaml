@@ -4,6 +4,11 @@ tcp_uart:
     port: 44502
     connected:
       name: TCP UART Connected
+  - id: tcp_uart_server
+    role: server
+    port: 44503
+    allowed_hosts:
+      - 127.0.0.1
 
 interval:
   - interval: 60s

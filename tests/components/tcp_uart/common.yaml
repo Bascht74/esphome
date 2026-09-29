@@ -9,6 +9,11 @@ tcp_uart:
     reconnect_interval: 5s
     connected:
       name: TCP UART Connected
+  - id: tcp_uart_server
+    role: server
+    port: 5020
+    allowed_hosts:
+      - 192.0.2.20
 
 interval:
   - interval: 60s
