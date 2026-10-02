@@ -12,6 +12,11 @@ tcp_uart:
       - 192.0.2.0/24
     connected:
       name: TCP UART Server Connected
+  - id: tcp_uart_modbus
+    host: 192.0.2.11
+    port: 502
+    protocol: modbus
+    timeout: 30s
 
 interval:
   - interval: 60s

@@ -10,3 +10,8 @@ uart_tcp:
     port: 44502
     connected:
       name: UART TCP Connected
+  - id: bridge_modbus
+    uart_id: uart_bus
+    host: 127.0.0.1
+    port: 44503
+    protocol: modbus

@@ -15,6 +15,8 @@ from esphome.const import (
     CONF_BAUD_RATE,
     CONF_ID,
     CONF_PORT,
+    CONF_PROTOCOL,
+    CONF_TIMEOUT,
     DEVICE_CLASS_CONNECTIVITY,
     ENTITY_CATEGORY_DIAGNOSTIC,
 )
@@ -27,6 +29,13 @@ MULTI_CONF = True
 
 tcp_uart_ns = cg.esphome_ns.namespace("tcp_uart")
 TcpUart = tcp_uart_ns.class_("TcpUart", uart.UARTComponent, cg.Component)
+TcpUartModbus = tcp_uart_ns.class_("TcpUartModbus", TcpUart)
+
+
+def _select_class(config: ConfigType) -> ConfigType:
+    if config[CONF_PROTOCOL] == "modbus":
+        config[CONF_ID].type = TcpUartModbus
+    return config
 
 
 BASE_SCHEMA = cv.Schema(
@@ -42,6 +51,10 @@ BASE_SCHEMA = cv.Schema(
         cv.Optional(
             CONF_RECONNECT_INTERVAL, default="5s"
         ): cv.positive_time_period_milliseconds,
+        cv.Optional(CONF_PROTOCOL, default="raw"): cv.one_of(
+            "raw", "modbus", lower=True
+        ),
+        cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_CONNECTED): binary_sensor.binary_sensor_schema(
             device_class=DEVICE_CLASS_CONNECTIVITY,
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -68,6 +81,7 @@ CONFIG_SCHEMA = cv.All(
         lower=True,
     ),
     socket.consume_role_sockets("tcp_uart"),
+    _select_class,
 )
 
 
@@ -84,11 +98,14 @@ async def to_code(config: ConfigType) -> None:
         socket.require_tcp_client_link()
     cg.add(var.set_port(config[CONF_PORT]))
     cg.add(var.set_reconnect_interval(config[CONF_RECONNECT_INTERVAL]))
+    cg.add(var.set_timeout(config[CONF_TIMEOUT]))
     # The socket is not clocked. These only satisfy UARTComponent and a consumer check.
     cg.add(var.set_baud_rate(config[CONF_BAUD_RATE]))
     cg.add(var.set_data_bits(config[CONF_DATA_BITS]))
     cg.add(var.set_stop_bits(config[CONF_STOP_BITS]))
     cg.add(var.set_parity(config[CONF_PARITY]))
+    if config[CONF_PROTOCOL] == "modbus":
+        cg.add_define("USE_TCP_UART_MODBUS")
     if (host := config.get(CONF_HOST)) is not None:
         cg.add(var.set_host(host))
     binary_sensors = binary_sensor.sub_binary_sensors(config)

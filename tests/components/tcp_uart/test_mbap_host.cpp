@@ -1,0 +1,50 @@
+#include <gtest/gtest.h>
+
+#include <cstring>
+
+#include "esphome/components/socket/mbap.h"
+
+namespace {
+
+using esphome::socket::Mbap;
+using esphome::socket::MbapTake;
+using esphome::socket::take_mbap;
+using esphome::socket::write_mbap;
+
+TEST(MbapTest, RoundTrip) {
+  const uint8_t pdu[] = {0x03, 0x00, 0x00, 0x00, 0x01};
+  uint8_t frame[16];
+  size_t n = write_mbap(frame, sizeof(frame), 0x1234, 0x11, pdu, sizeof(pdu));
+  ASSERT_EQ(n, 7u + sizeof(pdu));
+
+  Mbap out;
+  size_t used = 0;
+  ASSERT_EQ(take_mbap(frame, n, &out, &used), MbapTake::FRAME);
+  EXPECT_EQ(used, n);
+  EXPECT_EQ(out.txn, 0x1234);
+  EXPECT_EQ(out.unit, 0x11);
+  EXPECT_EQ(out.pdu_len, sizeof(pdu));
+  EXPECT_EQ(std::memcmp(out.pdu, pdu, sizeof(pdu)), 0);
+}
+
+TEST(MbapTest, ShortBufferNeedsMore) {
+  uint8_t frame[8] = {};
+  Mbap out;
+  size_t used = 99;
+  EXPECT_EQ(take_mbap(frame, 6, &out, &used), MbapTake::NEED_MORE);
+}
+
+TEST(MbapTest, BadProtocolDropsOneByte) {
+  uint8_t frame[8] = {0, 1, 0, 1, 0, 2, 1, 3};
+  Mbap out;
+  size_t used = 0;
+  EXPECT_EQ(take_mbap(frame, sizeof(frame), &out, &used), MbapTake::BAD);
+  EXPECT_EQ(used, 1u);
+}
+
+TEST(MbapTest, WriteRejectsAnEmptyPdu) {
+  uint8_t frame[8];
+  EXPECT_EQ(write_mbap(frame, sizeof(frame), 1, 1, frame, 0), 0u);
+}
+
+}  // namespace
