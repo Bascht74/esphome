@@ -1,9 +1,12 @@
 import esphome.codegen as cg
-from esphome.components import binary_sensor, socket, uart
+from esphome.components import binary_sensor, noise, socket, uart
 from esphome.components.const import CONF_HOST, CONF_RECONNECT_INTERVAL, CONF_ROLE
 import esphome.config_validation as cv
 from esphome.const import (
+    CONF_API,
+    CONF_ENCRYPTION,
     CONF_ID,
+    CONF_KEY,
     CONF_PORT,
     CONF_PROTOCOL,
     CONF_TIMEOUT,
@@ -11,17 +14,27 @@ from esphome.const import (
     DEVICE_CLASS_CONNECTIVITY,
     ENTITY_CATEGORY_DIAGNOSTIC,
 )
-from esphome.core import TimePeriodMilliseconds
+from esphome.core import CORE, TimePeriodMilliseconds
 from esphome.types import ConfigType
 
 CODEOWNERS = ["@Bascht74"]
 DEPENDENCIES = ["network", "uart"]
-AUTO_LOAD = ["binary_sensor", "socket"]
+
+
+def AUTO_LOAD(config):
+    base = ["binary_sensor", "socket"]
+    if not config or CONF_ENCRYPTION in config:
+        base.append("noise")
+    return base
+
+
 MULTI_CONF = True
 
 uart_tcp_ns = cg.esphome_ns.namespace("uart_tcp")
 UartTcp = uart_tcp_ns.class_("UartTcp", cg.Component, uart.UARTDevice)
 UartTcpModbus = uart_tcp_ns.class_("UartTcpModbus", UartTcp)
+UartTcpNoise = uart_tcp_ns.class_("UartTcpNoise", UartTcp)
+UartTcpModbusNoise = uart_tcp_ns.class_("UartTcpModbusNoise", UartTcpModbus)
 
 CONF_ALLOWED_IPS = "allowed_ips"
 CONF_CONNECTED = "connected"
@@ -29,8 +42,16 @@ CONF_SEND_WAIT_TIME = "send_wait_time"
 
 
 def _select_class(config: ConfigType) -> ConfigType:
-    if config[CONF_PROTOCOL] == "modbus":
+    encrypted = CONF_ENCRYPTION in config
+    if encrypted:
+        noise.inherit_encryption_key(config[CONF_ENCRYPTION], (CORE.config or {}).get(CONF_API) or {}, "uart_tcp")
+    modbus = config[CONF_PROTOCOL] == "modbus"
+    if modbus and encrypted:
+        config[CONF_ID].type = UartTcpModbusNoise
+    elif modbus:
         config[CONF_ID].type = UartTcpModbus
+    elif encrypted:
+        config[CONF_ID].type = UartTcpNoise
     return config
 
 
@@ -54,6 +75,7 @@ BASE_SCHEMA = cv.Schema(
         cv.Optional(CONF_PROTOCOL, default="raw"): cv.one_of("raw", "modbus", lower=True),
         cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_SEND_WAIT_TIME): cv.positive_time_period_milliseconds,
+        cv.Optional(CONF_ENCRYPTION): noise.encryption_schema,
         cv.Optional(CONF_CONNECTED): binary_sensor.binary_sensor_schema(
             device_class=DEVICE_CLASS_CONNECTIVITY,
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -103,5 +125,12 @@ async def to_code(config: ConfigType) -> None:
                 config.get(CONF_SEND_WAIT_TIME, TimePeriodMilliseconds(milliseconds=2000))
             )
         )
+    if CONF_ENCRYPTION in config:
+        cg.add_define("USE_UART_TCP_NOISE")
+        cg.add_define("USE_NOISE_UART")
+        cg.add(var.set_noise_psk(noise.new_psk_progmem(config[CONF_ID], config[CONF_ENCRYPTION][CONF_KEY])))
+        cg.add(var.set_noise_initiator(config[CONF_ROLE] != "server"))
+        if config[CONF_ROLE] == "server":
+            noise.enable_spare_ephemeral()
     binary_sensors = binary_sensor.sub_binary_sensors(config)
     await binary_sensors(CONF_CONNECTED, var.set_connected_sensor)

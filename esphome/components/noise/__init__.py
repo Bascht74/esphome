@@ -4,7 +4,7 @@ from typing import Any
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.const import CONF_ENCRYPTION, CONF_KEY
+from esphome.const import CONF_API, CONF_ENCRYPTION, CONF_KEY
 from esphome.core import CORE, ID
 from esphome.cpp_generator import MockObj
 from esphome.types import ConfigType
@@ -72,6 +72,33 @@ def static_encryption_key(conf: ConfigType) -> str | None:
     """The build time key of a component config; None without one or when
     the key is provisioned at runtime."""
     return (conf.get(CONF_ENCRYPTION) or {}).get(CONF_KEY) or None
+
+
+def inherit_encryption_key(encryption_conf: ConfigType, api_conf: ConfigType, owner: str) -> None:
+    """Fill a bare encryption block from the API key. An explicit key must match."""
+    if not isinstance(api_conf, dict):
+        api_conf = {}
+    api_key = (api_conf.get(CONF_ENCRYPTION) or {}).get(CONF_KEY)
+    if encryption_conf.get(CONF_KEY):
+        if api_key and encryption_conf[CONF_KEY] != api_key:
+            raise cv.Invalid(
+                f"'{owner}' {CONF_ENCRYPTION} {CONF_KEY} must match the "
+                f"'{CONF_API}' {CONF_ENCRYPTION} {CONF_KEY}; omit the "
+                f"'{owner}' {CONF_KEY} to use the '{CONF_API}' one"
+            )
+        return
+    if not api_key:
+        if CONF_ENCRYPTION in api_conf:
+            raise cv.Invalid(
+                f"the '{CONF_API}' {CONF_ENCRYPTION} {CONF_KEY} is provisioned at "
+                f"runtime and cannot be inherited at build time; set an explicit "
+                f"'{owner}' {CONF_ENCRYPTION} {CONF_KEY}"
+            )
+        raise cv.Invalid(
+            f"'{owner}' {CONF_ENCRYPTION} has no {CONF_KEY} and there is no "
+            f"'{CONF_API}' {CONF_ENCRYPTION} {CONF_KEY} to inherit; set one of them"
+        )
+    encryption_conf[CONF_KEY] = api_key
 
 
 def new_psk_progmem(parent_id: ID, key: str) -> MockObj:

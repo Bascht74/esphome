@@ -20,7 +20,7 @@ NoiseResponderHandshake::~NoiseResponderHandshake() {
   }
 }
 
-int NoiseResponderHandshake::init(const NoiseContext &ctx, const uint8_t *prologue, size_t prologue_len) {
+int NoiseResponderHandshake::init(const NoiseContext &ctx, const uint8_t *prologue, size_t prologue_len, int role) {
   if (this->handshake_ != nullptr) {
     noise_handshakestate_free(this->handshake_);
     this->handshake_ = nullptr;
@@ -39,7 +39,7 @@ int NoiseResponderHandshake::init(const NoiseContext &ctx, const uint8_t *prolog
       .hybrid_id = NOISE_DH_NONE,
   };
 
-  int err = noise_handshakestate_new_by_id(&this->handshake_, &nid, NOISE_ROLE_RESPONDER);
+  int err = noise_handshakestate_new_by_id(&this->handshake_, &nid, role);
   if (err != 0) {
     HANDSHAKE_STEP_LOG("noise_handshakestate_new_by_id", err);
     return err;
@@ -58,10 +58,13 @@ int NoiseResponderHandshake::init(const NoiseContext &ctx, const uint8_t *prolog
     return this->fail_init_(err);
   }
 #ifdef USE_NOISE_SPARE_EPHEMERAL
-  err = consume_spare_ephemeral(this->handshake_);
-  // Not fatal: the handshake generates its own key instead
-  if (err != 0) {
-    HANDSHAKE_STEP_LOG("noise_handshakestate_set_local_ephemeral", err);
+  // The spare key is a responder ephemeral. An initiator generates its own.
+  if (role == NOISE_ROLE_RESPONDER) {
+    err = consume_spare_ephemeral(this->handshake_);
+    // Not fatal: the handshake generates its own key instead
+    if (err != 0) {
+      HANDSHAKE_STEP_LOG("noise_handshakestate_set_local_ephemeral", err);
+    }
   }
 #endif
   err = noise_handshakestate_start(this->handshake_);
@@ -119,6 +122,13 @@ int NoiseResponderHandshake::write_message(uint8_t *out, size_t capacity, size_t
   if (err == 0)
     out_len = mbuf.size;
   return err;
+}
+
+void NoiseResponderHandshake::abort() {
+  if (this->handshake_ != nullptr) {
+    noise_handshakestate_free(this->handshake_);
+    this->handshake_ = nullptr;
+  }
 }
 
 int NoiseResponderHandshake::split(NoiseCipherState *&send_cipher, NoiseCipherState *&recv_cipher) {

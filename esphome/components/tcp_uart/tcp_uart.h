@@ -5,6 +5,10 @@
 #include "esphome/components/uart/uart_component.h"
 #include "esphome/core/component.h"
 
+#ifdef USE_TCP_UART_NOISE
+#include "esphome/components/noise/uart_channel.h"
+#endif
+
 #include <cstdint>
 
 namespace esphome::tcp_uart {
@@ -47,6 +51,13 @@ class TcpUart : public uart::UARTComponent, public Component {
   void read_socket_();
   void check_timeout_();
   void note_io_();
+#ifdef USE_TCP_UART_NOISE
+  virtual ssize_t read_link_(uint8_t *buf, size_t len) { return this->link_.read(buf, len); }
+  virtual size_t write_link_(const uint8_t *data, size_t len) { return this->link_.queue(data, len); }
+#else
+  ssize_t read_link_(uint8_t *buf, size_t len) { return this->link_.read(buf, len); }
+  size_t write_link_(const uint8_t *data, size_t len) { return this->link_.queue(data, len); }
+#endif
 
   static constexpr size_t RX_BUFFER_SIZE = 1024;
 
@@ -92,6 +103,48 @@ class TcpUartModbus : public TcpUart {
   uint8_t tcp_buf_[TCP_FRAME_SIZE]{};
   uint8_t tx_[RTU_FRAME_SIZE]{};
 };
+#endif
+
+#ifdef USE_TCP_UART_NOISE
+class TcpUartNoise : public TcpUart {
+ public:
+  using TcpUart::TcpUart;
+
+  void set_noise_psk(const uint8_t *psk) { this->channel_.set_psk(psk); }
+  void set_noise_initiator(bool initiator) { this->channel_.set_initiator(initiator); }
+  void loop() override;
+  void dump_config() override;
+  size_t available_for_write() override { return this->channel_.plain_budget(this->link_.tx_free()); }
+
+  template<typename Self> friend bool noise::uart_noise_ready(Self *self, const char *tag);
+
+ protected:
+  ssize_t read_link_(uint8_t *buf, size_t len) override { return this->channel_.read(this->link_, buf, len); }
+  size_t write_link_(const uint8_t *data, size_t len) override { return this->channel_.write(this->link_, data, len); }
+
+  noise::UartChannel channel_;
+};
+
+#ifdef USE_TCP_UART_MODBUS
+class TcpUartModbusNoise : public TcpUartModbus {
+ public:
+  TcpUartModbusNoise(const char *host, uint16_t port) : TcpUartModbus(host, port) { this->channel_.set_modbus(true); }
+
+  void set_noise_psk(const uint8_t *psk) { this->channel_.set_psk(psk); }
+  void set_noise_initiator(bool initiator) { this->channel_.set_initiator(initiator); }
+  void loop() override;
+  void dump_config() override;
+  size_t available_for_write() override { return this->channel_.plain_budget(this->link_.tx_free()); }
+
+  template<typename Self> friend bool noise::uart_noise_ready(Self *self, const char *tag);
+
+ protected:
+  ssize_t read_link_(uint8_t *buf, size_t len) override { return this->channel_.read(this->link_, buf, len); }
+  size_t write_link_(const uint8_t *data, size_t len) override { return this->channel_.write(this->link_, data, len); }
+
+  noise::UartChannel channel_;
+};
+#endif
 #endif
 
 }  // namespace esphome::tcp_uart

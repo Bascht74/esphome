@@ -157,6 +157,20 @@ TEST(NoiseResponderHandshakeTest, FullHandshakeAndTransportRoundTrip) {
   noise_cipherstate_free(recv_cipher);
 }
 
+// The two UART pipes share a key. Only the prologue stops a raw peer from joining a Modbus peer.
+TEST(NoiseResponderHandshakeTest, DifferentPrologueIsRejected) {
+  const psk_t psk = make_psk(7);
+  static constexpr uint8_t OTHER[] = {'o', 't', 'h', 'e', 'r'};
+  NoiseResponderHandshake responder;
+  ASSERT_EQ(responder.init(ctx_for(psk), PROLOGUE, sizeof(PROLOGUE)), 0);
+  Initiator initiator(psk, OTHER, sizeof(OTHER));
+  uint8_t msg[MAX_HANDSHAKE_SIZE];
+  size_t msg_len = initiator.write_message(msg, sizeof(msg));
+  ASSERT_GT(msg_len, 0u);
+  EXPECT_NE(responder.read_message(msg, msg_len), 0);
+  EXPECT_EQ(responder.action(), Action::ACTION_FAILED);
+}
+
 // One full NNpsk0 handshake; responder_e gets the ephemeral public key the responder put on the wire, read
 // before the initiator consumes the buffer in place
 static void run_handshake(NoiseResponderHandshake &responder, uint8_t responder_e[SPARE_EPHEMERAL_KEY_SIZE]) {

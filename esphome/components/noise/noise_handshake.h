@@ -38,8 +38,10 @@ class NoiseResponderHandshake {
 
   /// Create and start the handshake with the context's PSK and the prologue.
   /// A repeated call frees the previous handshake state and starts over. A
-  /// spare ephemeral key, when one is ready, is used instead of generating.
-  [[nodiscard]] int init(const NoiseContext &ctx, const uint8_t *prologue, size_t prologue_len);
+  /// spare ephemeral key, when one is ready, is used instead of generating
+  /// one for a responder. role is NOISE_ROLE_RESPONDER or NOISE_ROLE_INITIATOR.
+  [[nodiscard]] int init(const NoiseContext &ctx, const uint8_t *prologue, size_t prologue_len,
+                         int role = NOISE_ROLE_RESPONDER);
   /// ACTION_FAILED is the catch-all: returned before init(), after split()
   /// has released the state, and when noise-c reports a failed handshake.
   [[nodiscard]] Action action() const;
@@ -53,11 +55,22 @@ class NoiseResponderHandshake {
   /// owns both cipher states and must free them with noise_cipherstate_free();
   /// both are set to nullptr on error.
   [[nodiscard]] int split(NoiseCipherState *&send_cipher, NoiseCipherState *&recv_cipher);
+  /// Drop an in-progress handshake. The destructor does this too.
+  void abort();
 
  protected:
   int fail_init_(int err);
 
   NoiseHandshakeState *handshake_{nullptr};
+};
+
+/// Same handshake as the responder, speaking first. The API client lives
+/// outside the device, so a device-to-device pipe needs this side too.
+class NoiseInitiatorHandshake : public NoiseResponderHandshake {
+ public:
+  [[nodiscard]] int init(const NoiseContext &ctx, const uint8_t *prologue, size_t prologue_len) {
+    return NoiseResponderHandshake::init(ctx, prologue, prologue_len, NOISE_ROLE_INITIATOR);
+  }
 };
 
 }  // namespace esphome::noise

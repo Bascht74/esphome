@@ -1,5 +1,5 @@
 import esphome.codegen as cg
-from esphome.components import binary_sensor, socket, uart
+from esphome.components import binary_sensor, noise, socket, uart
 from esphome.components.const import (
     CONF_DATA_BITS,
     CONF_HOST,
@@ -9,31 +9,53 @@ from esphome.components.const import (
 )
 import esphome.config_validation as cv
 from esphome.const import (
+    CONF_API,
     CONF_BAUD_RATE,
+    CONF_ENCRYPTION,
     CONF_ID,
+    CONF_KEY,
     CONF_PORT,
     CONF_PROTOCOL,
     CONF_TIMEOUT,
     DEVICE_CLASS_CONNECTIVITY,
     ENTITY_CATEGORY_DIAGNOSTIC,
 )
+from esphome.core import CORE
 from esphome.types import ConfigType
 
 CODEOWNERS = ["@Bascht74"]
 DEPENDENCIES = ["network"]
-AUTO_LOAD = ["uart", "binary_sensor", "socket"]
+
+
+def AUTO_LOAD(config):
+    base = ["uart", "binary_sensor", "socket"]
+    if not config or CONF_ENCRYPTION in config:
+        base.append("noise")
+    return base
+
+
 MULTI_CONF = True
 
 tcp_uart_ns = cg.esphome_ns.namespace("tcp_uart")
 TcpUart = tcp_uart_ns.class_("TcpUart", uart.UARTComponent, cg.Component)
 TcpUartModbus = tcp_uart_ns.class_("TcpUartModbus", TcpUart)
+TcpUartNoise = tcp_uart_ns.class_("TcpUartNoise", TcpUart)
+TcpUartModbusNoise = tcp_uart_ns.class_("TcpUartModbusNoise", TcpUartModbus)
 
 CONF_CONNECTED = "connected"
 
 
 def _select_class(config: ConfigType) -> ConfigType:
-    if config[CONF_PROTOCOL] == "modbus":
+    encrypted = CONF_ENCRYPTION in config
+    if encrypted:
+        noise.inherit_encryption_key(config[CONF_ENCRYPTION], (CORE.config or {}).get(CONF_API) or {}, "tcp_uart")
+    modbus = config[CONF_PROTOCOL] == "modbus"
+    if modbus and encrypted:
+        config[CONF_ID].type = TcpUartModbusNoise
+    elif modbus:
         config[CONF_ID].type = TcpUartModbus
+    elif encrypted:
+        config[CONF_ID].type = TcpUartNoise
     return config
 
 
@@ -56,6 +78,7 @@ CONFIG_SCHEMA = cv.All(
                 "raw", "modbus", lower=True
             ),
             cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_ENCRYPTION): noise.encryption_schema,
             cv.Optional(CONF_CONNECTED): binary_sensor.binary_sensor_schema(
                 device_class=DEVICE_CLASS_CONNECTIVITY,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -80,5 +103,10 @@ async def to_code(config: ConfigType) -> None:
     cg.add(var.set_parity(config[CONF_PARITY]))
     if config[CONF_PROTOCOL] == "modbus":
         cg.add_define("USE_TCP_UART_MODBUS")
+    if CONF_ENCRYPTION in config:
+        cg.add_define("USE_TCP_UART_NOISE")
+        cg.add_define("USE_NOISE_UART")
+        cg.add(var.set_noise_psk(noise.new_psk_progmem(config[CONF_ID], config[CONF_ENCRYPTION][CONF_KEY])))
+        cg.add(var.set_noise_initiator(True))
     binary_sensors = binary_sensor.sub_binary_sensors(config)
     await binary_sensors(CONF_CONNECTED, var.set_connected_sensor)

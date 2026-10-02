@@ -282,6 +282,7 @@
 #define USE_MD5
 #define USE_NOISE
 #define USE_NOISE_SPARE_EPHEMERAL
+#define USE_NOISE_UART
 #define USE_SHA256
 #ifndef USE_RP2  // no MQTT backend or esp_wireguard library on RP2
 #define USE_MQTT
@@ -424,7 +425,9 @@
 #define USE_SOCKET_TCP_CLIENT_LINK
 #define USE_SOCKET_TCP_LISTENER
 #define USE_TCP_UART_MODBUS
+#define USE_TCP_UART_NOISE
 #define USE_UART_TCP_MODBUS
+#define USE_UART_TCP_NOISE
 #define USE_LWIP_FAST_SELECT
 
 #define USE_SPEAKER

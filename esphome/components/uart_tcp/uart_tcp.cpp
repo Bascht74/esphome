@@ -79,7 +79,7 @@ void UartTcp::read_socket_() {
   }
   uint8_t tmp[READ_CHUNK];
   size_t want = std::min(room, sizeof(tmp));
-  ssize_t count = this->link_.read(tmp, want);
+  ssize_t count = this->read_link_(tmp, want);
   if (count <= 0) {
     // A dropped link (-1) is cleaned up by sync_link_() on the next loop.
     if (count == 0) {
@@ -106,9 +106,10 @@ void UartTcp::discard_uart_() {
 }
 
 void UartTcp::read_uart_() {
-  size_t want = std::min<size_t>(this->available(), this->link_.tx_free());
-  if (want != 0 && this->read_array(this->link_.tx_tail(), want)) {
-    this->link_.tx_commit(want);
+  uint8_t tmp[READ_CHUNK];
+  size_t want = std::min<size_t>({this->available(), this->wire_budget_(), sizeof(tmp)});
+  if (want != 0 && this->read_array(tmp, want)) {
+    this->write_link_(tmp, want);
     this->note_io_();
   }
 }
@@ -208,7 +209,7 @@ void UartTcpModbus::read_tcp_buf_() {
   if (room == 0 || !this->link_.ready()) {
     return;
   }
-  ssize_t count = this->link_.read(this->tcp_buf_ + this->tcp_len_, std::min(room, READ_CHUNK));
+  ssize_t count = this->read_link_(this->tcp_buf_ + this->tcp_len_, std::min(room, READ_CHUNK));
   if (count > 0) {
     this->tcp_len_ += static_cast<uint16_t>(count);
     this->note_io_();
@@ -287,7 +288,7 @@ void UartTcpModbus::send_mbap_(uint16_t txn, uint8_t unit, const uint8_t *pdu, s
   uint8_t frame[UartTcpModbus::TCP_FRAME_SIZE];
   size_t n = modbus::write_mbap(frame, sizeof(frame), txn, unit, pdu, pdu_len);
   if (n != 0) {
-    this->link_.queue(frame, n);
+    this->write_link_(frame, n);
     this->note_io_();
   }
 }
@@ -403,6 +404,49 @@ void UartTcpModbus::pump_modbus_() {
   this->wait_tcp_ = true;
   this->wait_started_ms_ = now;
 }
+#endif
+
+#ifdef USE_UART_TCP_NOISE
+void UartTcpNoise::loop() {
+  if (!noise::uart_noise_ready(this, TAG)) {
+    return;
+  }
+  if (this->channel_.pending() || this->rx_pending_ || this->link_.ready()) {
+    this->read_socket_();
+  }
+  this->read_uart_();
+  this->link_.flush_tx();
+  if (this->channel_.failed()) {
+    this->link_.close();
+    this->link_.note_attempt();
+    this->channel_.reset();
+  }
+}
+
+void UartTcpNoise::dump_config() {
+  UartTcp::dump_config();
+  ESP_LOGCONFIG(TAG, "  Encryption: YES");
+}
+
+#ifdef USE_UART_TCP_MODBUS
+void UartTcpModbusNoise::loop() {
+  if (!noise::uart_noise_ready(this, TAG)) {
+    return;
+  }
+  this->pump_modbus_();
+  this->link_.flush_tx();
+  if (this->channel_.failed()) {
+    this->link_.close();
+    this->link_.note_attempt();
+    this->channel_.reset();
+  }
+}
+
+void UartTcpModbusNoise::dump_config() {
+  UartTcpModbus::dump_config();
+  ESP_LOGCONFIG(TAG, "  Encryption: YES");
+}
+#endif
 #endif
 
 }  // namespace esphome::uart_tcp

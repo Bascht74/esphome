@@ -60,7 +60,7 @@ void TcpUart::read_socket_() {
     // Only a read that filled all free space gets here, so rx_pending_ is already set.
     return;
   }
-  ssize_t count = this->link_.read(this->rx_ + this->rx_end_, room);
+  ssize_t count = this->read_link_(this->rx_ + this->rx_end_, room);
   if (count <= 0) {
     // A dropped link (-1) is cleaned up by sync_link_() on the next loop.
     if (count == 0) {
@@ -96,7 +96,7 @@ bool TcpUart::maintain_link_() {
 }
 
 void TcpUart::write_array(const uint8_t *data, size_t len) {
-  size_t queued = this->link_.queue(data, len);
+  size_t queued = this->write_link_(data, len);
   if (queued > 0) {
     this->note_io_();
   }
@@ -190,7 +190,7 @@ void TcpUartModbus::read_mbap_() {
     this->tcp_len_ = 0;
     return;
   }
-  ssize_t count = this->link_.read(this->tcp_buf_ + this->tcp_len_, room);
+  ssize_t count = this->read_link_(this->tcp_buf_ + this->tcp_len_, room);
   if (count <= 0) {
     if (count == 0) {
       this->rx_pending_ = false;
@@ -263,9 +263,53 @@ void TcpUartModbus::send_rtu_as_mbap_() {
   if (n == 0) {
     return;
   }
-  this->link_.queue(frame, n);
+  this->write_link_(frame, n);
   this->note_io_();
 }
+#endif
+
+#ifdef USE_TCP_UART_NOISE
+void TcpUartNoise::loop() {
+  if (!noise::uart_noise_ready(this, TAG)) {
+    return;
+  }
+  if (this->channel_.pending() || this->rx_pending_ || this->link_.ready()) {
+    this->read_socket_();
+  }
+  this->link_.flush_tx();
+  if (this->channel_.failed()) {
+    this->link_.close();
+    this->link_.note_attempt();
+    this->channel_.reset();
+  }
+}
+
+void TcpUartNoise::dump_config() {
+  TcpUart::dump_config();
+  ESP_LOGCONFIG(TAG, "  Encryption: YES");
+}
+
+#ifdef USE_TCP_UART_MODBUS
+void TcpUartModbusNoise::loop() {
+  if (!noise::uart_noise_ready(this, TAG)) {
+    return;
+  }
+  if (this->channel_.pending() || this->rx_pending_ || this->link_.ready()) {
+    this->read_mbap_();
+  }
+  this->link_.flush_tx();
+  if (this->channel_.failed()) {
+    this->link_.close();
+    this->link_.note_attempt();
+    this->channel_.reset();
+  }
+}
+
+void TcpUartModbusNoise::dump_config() {
+  TcpUartModbus::dump_config();
+  ESP_LOGCONFIG(TAG, "  Encryption: YES");
+}
+#endif
 #endif
 
 }  // namespace esphome::tcp_uart
