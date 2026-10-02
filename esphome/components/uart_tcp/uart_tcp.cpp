@@ -222,7 +222,7 @@ bool UartTcpModbus::take_rtu_(uint8_t *pdu, size_t *pdu_len, uint8_t *unit) {
   if (this->uart_len_ < 4 || micros() - this->last_uart_us_ < this->frame_gap_us_()) {
     return false;
   }
-  if (!socket::rtu_crc_ok(this->uart_buf_, this->uart_len_)) {
+  if (!modbus::rtu_crc_ok(this->uart_buf_, this->uart_len_)) {
     ESP_LOGW(TAG, "RTU CRC mismatch");
     this->uart_len_ = 0;
     return false;
@@ -275,11 +275,13 @@ bool UartTcpModbus::write_rtu_(const uint8_t *pdu, size_t pdu_len, uint8_t unit)
 
 void UartTcpModbus::send_mbap_(uint16_t txn, uint8_t unit, const uint8_t *pdu, size_t pdu_len) {
   uint8_t frame[UartTcpModbus::TCP_FRAME_SIZE];
-  size_t n = socket::write_mbap(frame, sizeof(frame), txn, unit, pdu, pdu_len);
-  if (n != 0) {
-    this->link_.queue(frame, n);
-    this->note_io_();
+  size_t n = modbus::write_mbap(frame, sizeof(frame), txn, unit, pdu, pdu_len);
+  if (n == 0 || this->link_.tx_free() < n) {
+    ESP_LOGW(TAG, "TX buffer full, dropped the Modbus frame");
+    return;
   }
+  this->link_.queue(frame, n);
+  this->note_io_();
 }
 
 void UartTcpModbus::pump_modbus_() {
@@ -331,16 +333,16 @@ void UartTcpModbus::pump_modbus_() {
   if (this->wait_tcp_) {
     this->read_tcp_buf_();
     while (this->tcp_len_ != 0) {
-      socket::Mbap frame;
+      modbus::Mbap frame;
       size_t used = 0;
-      switch (socket::take_mbap(this->tcp_buf_, this->tcp_len_, &frame, &used)) {
-        case socket::MbapTake::NEED_MORE:
+      switch (modbus::take_mbap(this->tcp_buf_, this->tcp_len_, &frame, &used)) {
+        case modbus::MbapTake::NEED_MORE:
           return;
-        case socket::MbapTake::BAD:
+        case modbus::MbapTake::BAD:
           std::memmove(this->tcp_buf_, this->tcp_buf_ + used, this->tcp_len_ - used);
           this->tcp_len_ -= static_cast<uint16_t>(used);
           continue;
-        case socket::MbapTake::FRAME:
+        case modbus::MbapTake::FRAME:
           break;
       }
       std::memmove(this->tcp_buf_, this->tcp_buf_ + used, this->tcp_len_ - used);
@@ -357,13 +359,19 @@ void UartTcpModbus::pump_modbus_() {
   }
   if (this->server_) {
     this->read_tcp_buf_();
-    socket::Mbap frame;
+    modbus::Mbap frame;
     size_t used = 0;
-    if (socket::take_mbap(this->tcp_buf_, this->tcp_len_, &frame, &used) != socket::MbapTake::FRAME) {
-      if (used == 1 && this->tcp_len_ != 0) {
-        std::memmove(this->tcp_buf_, this->tcp_buf_ + 1, --this->tcp_len_);
-      }
-      return;
+    switch (modbus::take_mbap(this->tcp_buf_, this->tcp_len_, &frame, &used)) {
+      case modbus::MbapTake::NEED_MORE:
+        return;
+      case modbus::MbapTake::BAD:
+        if (this->tcp_len_ != 0) {
+          std::memmove(this->tcp_buf_, this->tcp_buf_ + 1, this->tcp_len_ - 1);
+          this->tcp_len_--;
+        }
+        return;
+      case modbus::MbapTake::FRAME:
+        break;
     }
     std::memmove(this->tcp_buf_, this->tcp_buf_ + used, this->tcp_len_ - used);
     this->tcp_len_ -= static_cast<uint16_t>(used);

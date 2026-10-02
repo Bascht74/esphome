@@ -179,6 +179,9 @@ void TcpUartModbus::loop() {
     this->tx_len_ = 0;
     return;
   }
+  if (modbus::rtu_crc_ok(this->tx_, this->tx_len_)) {
+    this->send_rtu_as_mbap_();
+  }
   if (this->rx_pending_ || this->link_.ready()) {
     this->read_mbap_();
   }
@@ -198,8 +201,15 @@ uart::UARTFlushResult TcpUartModbus::flush() {
 }
 
 void TcpUartModbus::read_mbap_() {
+  if (this->rx_start_ != 0) {
+    this->rx_end_ -= this->rx_start_;
+    std::memmove(this->rx_, this->rx_ + this->rx_start_, this->rx_end_);
+    this->rx_start_ = 0;
+  }
+  this->deliver_mbap_();
   size_t room = sizeof(this->tcp_buf_) - this->tcp_len_;
   if (room == 0) {
+    ESP_LOGW(TAG, "TCP buffer full, dropped");
     this->tcp_len_ = 0;
     return;
   }
@@ -213,17 +223,21 @@ void TcpUartModbus::read_mbap_() {
   this->tcp_len_ += static_cast<uint16_t>(count);
   this->rx_pending_ = static_cast<size_t>(count) == room;
   this->note_io_();
+  this->deliver_mbap_();
+}
+
+void TcpUartModbus::deliver_mbap_() {
   while (this->tcp_len_ != 0) {
-    socket::Mbap frame;
+    modbus::Mbap frame;
     size_t used = 0;
-    switch (socket::take_mbap(this->tcp_buf_, this->tcp_len_, &frame, &used)) {
-      case socket::MbapTake::NEED_MORE:
+    switch (modbus::take_mbap(this->tcp_buf_, this->tcp_len_, &frame, &used)) {
+      case modbus::MbapTake::NEED_MORE:
         return;
-      case socket::MbapTake::BAD:
+      case modbus::MbapTake::BAD:
         std::memmove(this->tcp_buf_, this->tcp_buf_ + used, this->tcp_len_ - used);
         this->tcp_len_ -= static_cast<uint16_t>(used);
         continue;
-      case socket::MbapTake::FRAME:
+      case modbus::MbapTake::FRAME:
         break;
     }
     std::memmove(this->tcp_buf_, this->tcp_buf_ + used, this->tcp_len_ - used);
@@ -234,6 +248,7 @@ void TcpUartModbus::read_mbap_() {
     }
     size_t rtu_len = frame.pdu_len + 3;
     if (this->rx_end_ + rtu_len > RX_BUFFER_SIZE) {
+      ESP_LOGW(TAG, "RX buffer full, dropped the response");
       continue;
     }
     this->rx_[this->rx_end_] = frame.unit;
@@ -259,23 +274,34 @@ void TcpUartModbus::queue_rtu_(const uint8_t *data, size_t len) {
   // The modbus component writes one whole RTU frame and does not flush
   // unless a flow-control pin is set. A frame that arrives in that one
   // write carries its CRC already, so it can go out here.
-  if (before == 0 && socket::rtu_crc_ok(this->tx_, this->tx_len_)) {
+  if (before == 0 && modbus::rtu_crc_ok(this->tx_, this->tx_len_)) {
     this->send_rtu_as_mbap_();
   }
 }
 
 void TcpUartModbus::send_rtu_as_mbap_() {
-  if (!socket::rtu_crc_ok(this->tx_, this->tx_len_) || !this->link_.connected()) {
+  if (!modbus::rtu_crc_ok(this->tx_, this->tx_len_) || !this->link_.connected()) {
     this->tx_len_ = 0;
     return;
   }
-  this->txn_ = this->txn_ == 0xFFFF ? 1 : static_cast<uint16_t>(this->txn_ + 1);
+  uint16_t txn = this->txn_ == 0xFFFF ? 1 : static_cast<uint16_t>(this->txn_ + 1);
   uint8_t frame[TcpUartModbus::TCP_FRAME_SIZE];
-  size_t n = socket::write_mbap(frame, sizeof(frame), this->txn_, this->tx_[0], this->tx_ + 1, this->tx_len_ - 3);
-  this->tx_len_ = 0;
+  size_t n = modbus::write_mbap(frame, sizeof(frame), txn, this->tx_[0], this->tx_ + 1, this->tx_len_ - 3);
   if (n == 0) {
+    this->tx_len_ = 0;
     return;
   }
+  // A short queue would put a partial MBAP on the wire. Hold the RTU and retry.
+  if (this->link_.tx_free() < n) {
+    uint32_t now = App.get_loop_component_start_time();
+    if (this->last_drop_log_ms_ == 0 || now - this->last_drop_log_ms_ >= DROP_LOG_INTERVAL_MS) {
+      ESP_LOGW(TAG, "TX buffer full, holding the Modbus frame");
+      this->last_drop_log_ms_ = now;
+    }
+    return;
+  }
+  this->txn_ = txn;
+  this->tx_len_ = 0;
   this->link_.queue(frame, n);
   this->note_io_();
 }

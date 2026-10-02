@@ -6,10 +6,11 @@
 
 namespace {
 
-using esphome::socket::Mbap;
-using esphome::socket::MbapTake;
-using esphome::socket::take_mbap;
-using esphome::socket::write_mbap;
+using esphome::modbus::Mbap;
+using esphome::modbus::MbapTake;
+using esphome::modbus::rtu_crc_ok;
+using esphome::modbus::take_mbap;
+using esphome::modbus::write_mbap;
 
 TEST(MbapTest, RoundTrip) {
   const uint8_t pdu[] = {0x03, 0x00, 0x00, 0x00, 0x01};
@@ -32,6 +33,33 @@ TEST(MbapTest, ShortBufferNeedsMore) {
   Mbap out;
   size_t used = 99;
   EXPECT_EQ(take_mbap(frame, 6, &out, &used), MbapTake::NEED_MORE);
+  EXPECT_EQ(used, 0u);
+
+  // Length says 5 more bytes, but only the header is here.
+  uint8_t short_body[8] = {0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x11, 0x03};
+  used = 99;
+  EXPECT_EQ(take_mbap(short_body, sizeof(short_body), &out, &used), MbapTake::NEED_MORE);
+  EXPECT_EQ(used, 0u);
+}
+
+TEST(MbapTest, RejectsALengthOutsideTheSpec) {
+  Mbap out;
+  size_t used = 99;
+  uint8_t too_small[7] = {0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x11};
+  EXPECT_EQ(take_mbap(too_small, sizeof(too_small), &out, &used), MbapTake::BAD);
+  EXPECT_EQ(used, 1u);
+
+  uint8_t too_big[7] = {0x00, 0x01, 0x00, 0x00, 0x00, 0xFF, 0x11};
+  used = 0;
+  EXPECT_EQ(take_mbap(too_big, sizeof(too_big), &out, &used), MbapTake::BAD);
+  EXPECT_EQ(used, 1u);
+}
+
+TEST(MbapTest, RtuCrc) {
+  const uint8_t frame[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0A};
+  EXPECT_TRUE(rtu_crc_ok(frame, sizeof(frame)));
+  EXPECT_FALSE(rtu_crc_ok(frame, 3));
+  EXPECT_FALSE(rtu_crc_ok(frame, sizeof(frame) - 1));
 }
 
 TEST(MbapTest, BadProtocolDropsOneByte) {

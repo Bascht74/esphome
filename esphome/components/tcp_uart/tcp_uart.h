@@ -87,6 +87,7 @@ class TcpUartModbus : public TcpUart {
 
  protected:
   void read_mbap_();
+  void deliver_mbap_();
   void queue_rtu_(const uint8_t *data, size_t len);
   void send_rtu_as_mbap_();
 

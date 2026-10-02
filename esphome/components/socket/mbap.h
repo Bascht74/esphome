@@ -6,10 +6,10 @@
 #include <cstdint>
 #include <cstring>
 
-namespace esphome::socket {
+namespace esphome::modbus {
 
-// Shared by tcp_uart and uart_tcp. It lives here because both already load
-// socket, so the modbus component itself is not linked.
+// The file lives under socket because tcp_uart and uart_tcp already load that
+// component. The modbus component itself is not linked.
 // MBAP is the 7-byte header Modbus TCP puts in front of a PDU:
 // transaction, protocol (always 0), length, unit id. The PDU is the RTU
 // frame without its address and CRC. Length counts the unit id plus the PDU.
@@ -30,6 +30,7 @@ enum class MbapTake : uint8_t {
 };
 
 inline MbapTake take_mbap(const uint8_t *buf, size_t len, Mbap *out, size_t *used) {
+  *used = 0;
   if (len < MBAP_HEADER_SIZE) {
     return MbapTake::NEED_MORE;
   }
@@ -74,4 +75,4 @@ inline bool rtu_crc_ok(const uint8_t *frame, size_t len) {
   return len >= 4 && len <= 256 && crc16(frame, static_cast<uint16_t>(len)) == 0;
 }
 
-}  // namespace esphome::socket
+}  // namespace esphome::modbus
