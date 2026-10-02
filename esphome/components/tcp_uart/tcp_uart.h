@@ -19,6 +19,7 @@ class TcpUart : public uart::UARTComponent, public Component {
   }
 
   void set_reconnect_interval(uint32_t ms) { this->link_.set_reconnect_interval(ms); }
+  void set_timeout(uint32_t ms) { this->timeout_ms_ = ms; }
   void set_connected_sensor(binary_sensor::BinarySensor *sensor) { this->connected_sensor_ = sensor; }
 
   void setup() override;
@@ -42,13 +43,18 @@ class TcpUart : public uart::UARTComponent, public Component {
  protected:
   void check_logger_conflict() override {}
   void sync_link_();
+  bool maintain_link_();
   void read_socket_();
+  void check_timeout_();
+  void note_io_();
 
   static constexpr size_t RX_BUFFER_SIZE = 1024;
 
   socket::TcpClientLink link_;
   binary_sensor::BinarySensor *connected_sensor_{nullptr};
   uint32_t last_drop_log_ms_{0};
+  uint32_t timeout_ms_{0};
+  uint32_t last_io_ms_{0};
   // rx_[rx_start_, rx_end_) holds unread bytes; read_socket_() compacts to the front.
   uint16_t rx_start_{0};
   uint16_t rx_end_{0};
@@ -58,5 +64,34 @@ class TcpUart : public uart::UARTComponent, public Component {
   bool rx_pending_{false};
   uint8_t rx_[RX_BUFFER_SIZE]{};
 };
+
+#ifdef USE_TCP_UART_MODBUS
+/// Same link, but the socket speaks Modbus TCP and the UART side stays RTU.
+class TcpUartModbus : public TcpUart {
+ public:
+  TcpUartModbus(const char *host, uint16_t port) : TcpUart(host, port) {}
+
+  void loop() override;
+  void dump_config() override;
+  void write_array(const uint8_t *data, size_t len) override;
+  uart::UARTFlushResult flush() override;
+
+ protected:
+  void read_mbap_();
+  void queue_rtu_(const uint8_t *data, size_t len);
+  void send_rtu_as_mbap_();
+
+  // Modbus TCP ADU is 7 bytes of MBAP plus at most 253 of PDU.
+  static constexpr size_t TCP_FRAME_SIZE = 260;
+  // One RTU frame: address, PDU and CRC, capped at 256.
+  static constexpr size_t RTU_FRAME_SIZE = 256;
+
+  uint16_t txn_{0};
+  uint16_t tcp_len_{0};
+  uint16_t tx_len_{0};
+  uint8_t tcp_buf_[TCP_FRAME_SIZE]{};
+  uint8_t tx_[RTU_FRAME_SIZE]{};
+};
+#endif
 
 }  // namespace esphome::tcp_uart

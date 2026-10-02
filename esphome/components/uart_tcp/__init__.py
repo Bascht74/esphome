@@ -5,10 +5,13 @@ import esphome.config_validation as cv
 from esphome.const import (
     CONF_ID,
     CONF_PORT,
+    CONF_PROTOCOL,
+    CONF_TIMEOUT,
     CONF_UART_ID,
     DEVICE_CLASS_CONNECTIVITY,
     ENTITY_CATEGORY_DIAGNOSTIC,
 )
+from esphome.core import TimePeriodMilliseconds
 from esphome.types import ConfigType
 
 CODEOWNERS = ["@Bascht74"]
@@ -18,9 +21,26 @@ MULTI_CONF = True
 
 uart_tcp_ns = cg.esphome_ns.namespace("uart_tcp")
 UartTcp = uart_tcp_ns.class_("UartTcp", cg.Component, uart.UARTDevice)
+UartTcpModbus = uart_tcp_ns.class_("UartTcpModbus", UartTcp)
 
 CONF_ALLOWED_IPS = "allowed_ips"
 CONF_CONNECTED = "connected"
+CONF_SEND_WAIT_TIME = "send_wait_time"
+
+
+def _select_class(config: ConfigType) -> ConfigType:
+    if config[CONF_PROTOCOL] == "modbus":
+        config[CONF_ID].type = UartTcpModbus
+    return config
+
+
+def _check_send_wait(config: ConfigType) -> ConfigType:
+    if config[CONF_PROTOCOL] != "modbus" and CONF_SEND_WAIT_TIME in config:
+        raise cv.Invalid(
+            "send_wait_time is only used when protocol is modbus",
+            path=[CONF_SEND_WAIT_TIME],
+        )
+    return config
 
 
 BASE_SCHEMA = cv.Schema(
@@ -31,6 +51,9 @@ BASE_SCHEMA = cv.Schema(
         cv.Optional(
             CONF_RECONNECT_INTERVAL, default="5s"
         ): cv.positive_time_period_milliseconds,
+        cv.Optional(CONF_PROTOCOL, default="raw"): cv.one_of("raw", "modbus", lower=True),
+        cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_milliseconds,
+        cv.Optional(CONF_SEND_WAIT_TIME): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_CONNECTED): binary_sensor.binary_sensor_schema(
             device_class=DEVICE_CLASS_CONNECTIVITY,
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -51,6 +74,8 @@ CONFIG_SCHEMA = cv.All(
         lower=True,
     ),
     socket.consume_role_sockets("uart_tcp"),
+    _check_send_wait,
+    _select_class,
 )
 
 
@@ -68,7 +93,15 @@ async def to_code(config: ConfigType) -> None:
         socket.require_tcp_client_link()
     cg.add(var.set_port(config[CONF_PORT]))
     cg.add(var.set_reconnect_interval(config[CONF_RECONNECT_INTERVAL]))
+    cg.add(var.set_timeout(config[CONF_TIMEOUT]))
     if (host := config.get(CONF_HOST)) is not None:
         cg.add(var.set_host(host))
+    if config[CONF_PROTOCOL] == "modbus":
+        cg.add_define("USE_UART_TCP_MODBUS")
+        cg.add(
+            var.set_send_wait_time(
+                config.get(CONF_SEND_WAIT_TIME, TimePeriodMilliseconds(milliseconds=2000))
+            )
+        )
     binary_sensors = binary_sensor.sub_binary_sensors(config)
     await binary_sensors(CONF_CONNECTED, var.set_connected_sensor)

@@ -9,6 +9,10 @@ tcp_uart:
     reconnect_interval: 10s
     connected:
       name: TCP UART Connected
+  - id: tcp_uart_modbus
+    host: 192.0.2.11
+    port: 502
+    protocol: modbus
 
 interval:
   - interval: 60s
