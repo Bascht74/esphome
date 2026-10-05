@@ -10,6 +10,17 @@
 
 namespace esphome::uart::testing {
 
+// The base leaves writing to the class that derives from it; this one records each write.
+class TestVirtualUART : public VirtualUARTComponent {
+ public:
+  using VirtualUARTComponent::VirtualUARTComponent;
+
+  void write_array(const uint8_t *data, size_t len) override { this->writes.emplace_back(data, data + len); }
+  UARTFlushResult flush() override { return UARTFlushResult::UART_FLUSH_RESULT_SUCCESS; }
+
+  std::vector<std::vector<uint8_t>> writes;
+};
+
 // Records each block it is handed, so a test can see the boundaries.
 class BlockRecorder : public UARTSink {
  public:
@@ -21,7 +32,7 @@ class BlockRecorder : public UARTSink {
 static constexpr uint8_t FRAME[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x0A, 0xC5, 0xCD};
 
 TEST(VirtualUART, InjectedBytesAreReadInOrder) {
-  VirtualUARTComponent uart(16);
+  TestVirtualUART uart(16);
   EXPECT_EQ(uart.get_rx_buffer_size(), 16u);
   EXPECT_TRUE(uart.inject_rx(FRAME, sizeof(FRAME)));
   EXPECT_EQ(uart.available(), sizeof(FRAME));
@@ -36,7 +47,7 @@ TEST(VirtualUART, InjectedBytesAreReadInOrder) {
 }
 
 TEST(VirtualUART, ShortReadAndEmptyPeekFailWithoutConsuming) {
-  VirtualUARTComponent uart(16);
+  TestVirtualUART uart(16);
   uint8_t byte = 0;
   EXPECT_FALSE(uart.peek_byte(&byte));
   uart.inject_rx(FRAME, 2);
@@ -45,18 +56,25 @@ TEST(VirtualUART, ShortReadAndEmptyPeekFailWithoutConsuming) {
   EXPECT_EQ(uart.available(), 2u);
 }
 
+TEST(VirtualUART, ReadOfNothingSucceeds) {
+  TestVirtualUART uart(16);
+  uint8_t byte = 0xAA;
+  EXPECT_TRUE(uart.read_array(&byte, 0));
+  EXPECT_EQ(byte, 0xAA);
+}
+
 TEST(VirtualUART, BlockThatDoesNotFitIsRefusedWhole) {
-  VirtualUARTComponent uart(10);
+  TestVirtualUART uart(10);
   EXPECT_TRUE(uart.inject_rx(FRAME, sizeof(FRAME)));
   EXPECT_FALSE(uart.inject_rx(FRAME, 3));
   EXPECT_EQ(uart.available(), sizeof(FRAME));
-  VirtualUARTComponent no_ring(0);
+  TestVirtualUART no_ring(0);
   EXPECT_FALSE(no_ring.inject_rx(FRAME, 1));
   EXPECT_EQ(no_ring.available(), 0u);
 }
 
 TEST(VirtualUART, RingWrapsAround) {
-  VirtualUARTComponent uart(10);
+  TestVirtualUART uart(10);
   uint8_t out[sizeof(FRAME)]{};
   for (int round = 0; round < 5; round++) {
     ASSERT_TRUE(uart.inject_rx(FRAME, sizeof(FRAME)));
@@ -65,40 +83,8 @@ TEST(VirtualUART, RingWrapsAround) {
   }
 }
 
-TEST(VirtualUART, WriteHandsTheWholeBlockToTheSink) {
-  VirtualUARTComponent uart(0);
-  BlockRecorder sink;
-  uart.set_tx_sink(&sink);
-  uart.write_array(FRAME, sizeof(FRAME));
-  ASSERT_EQ(sink.blocks.size(), 1u);
-  EXPECT_EQ(sink.blocks[0].size(), sizeof(FRAME));
-  EXPECT_EQ(uart.available_for_write(), SIZE_MAX);
-  EXPECT_EQ(uart.flush(), UARTFlushResult::UART_FLUSH_RESULT_SUCCESS);
-}
-
-TEST(VirtualUART, WithoutSinkWritesAreDroppedAndFlushFails) {
-  VirtualUARTComponent uart(0);
-  uart.write_array(FRAME, sizeof(FRAME));
-  EXPECT_EQ(uart.available_for_write(), 0u);
-  EXPECT_EQ(uart.flush(), UARTFlushResult::UART_FLUSH_RESULT_FAILED);
-}
-
-TEST(VirtualUART, PairedUartsActLikeANullModem) {
-  VirtualUARTComponent a(16);
-  VirtualUARTComponent b(16);
-  a.set_tx_sink(&b);
-  b.set_tx_sink(&a);
-  a.write_array(FRAME, sizeof(FRAME));
-  EXPECT_EQ(b.available(), sizeof(FRAME));
-  EXPECT_EQ(a.available(), 0u);
-  b.write_byte(0x42);
-  uint8_t byte = 0;
-  EXPECT_TRUE(a.read_byte(&byte));
-  EXPECT_EQ(byte, 0x42);
-}
-
 TEST(VirtualUART, AttachedReaderGetsBlocksAndTheRingStaysEmpty) {
-  VirtualUARTComponent uart(16);
+  TestVirtualUART uart(16);
   BlockRecorder reader;
   uart.set_rx_sink(&reader);
   EXPECT_TRUE(uart.inject_rx(FRAME, sizeof(FRAME)));
@@ -107,6 +93,49 @@ TEST(VirtualUART, AttachedReaderGetsBlocksAndTheRingStaysEmpty) {
   EXPECT_EQ(reader.blocks[0].size(), sizeof(FRAME));
   EXPECT_EQ(reader.blocks[1].size(), 3u);
   EXPECT_EQ(uart.available(), 0u);
+}
+
+// Two ends wired to each other whose readers write every block back: each write lands in the peer's inject_rx().
+class LoopbackUART : public TestVirtualUART {
+ public:
+  LoopbackUART() : TestVirtualUART(0) {}
+  void write_array(const uint8_t *data, size_t len) override {
+    this->writes.emplace_back(data, data + len);
+    this->peer->inject_rx(data, len);
+  }
+  LoopbackUART *peer{nullptr};
+};
+
+class EchoReader : public UARTSink {
+ public:
+  explicit EchoReader(LoopbackUART *own) : own_(own) {}
+  void on_block(const uint8_t *data, size_t len) override {
+    this->calls++;
+    this->own_->write_array(data, len);
+  }
+  int calls{0};
+
+ protected:
+  LoopbackUART *own_;
+};
+
+TEST(VirtualUART, ReaderThatWritesBackIsNotHandedABlockAgain) {
+  LoopbackUART x;
+  LoopbackUART y;
+  x.peer = &y;
+  y.peer = &x;
+  EchoReader x_reader(&x);
+  EchoReader y_reader(&y);
+  x.set_rx_sink(&x_reader);
+  y.set_rx_sink(&y_reader);
+  // x's reader echoes to y, y's reader echoes back to x, whose reader is still inside on_block(): refused there.
+  EXPECT_TRUE(x.inject_rx(FRAME, sizeof(FRAME)));
+  EXPECT_EQ(x_reader.calls, 1);
+  EXPECT_EQ(y_reader.calls, 1);
+  ASSERT_EQ(y.writes.size(), 1u);
+  // Once on_block() has returned, the next block is handed over again.
+  EXPECT_TRUE(x.inject_rx(FRAME, 3));
+  EXPECT_EQ(x_reader.calls, 2);
 }
 
 }  // namespace esphome::uart::testing

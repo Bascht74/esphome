@@ -14,7 +14,12 @@ VirtualUARTComponent::VirtualUARTComponent(uint16_t rx_buffer_size) {
 
 bool VirtualUARTComponent::inject_rx(const uint8_t *data, size_t len) {
   if (this->rx_sink_ != nullptr) {
+    if (this->in_rx_sink_) {
+      return false;
+    }
+    this->in_rx_sink_ = true;
     this->rx_sink_->on_block(data, len);
+    this->in_rx_sink_ = false;
     return true;
   }
   if (len > static_cast<size_t>(this->rx_.capacity() - this->rx_.size())) {
@@ -24,12 +29,6 @@ bool VirtualUARTComponent::inject_rx(const uint8_t *data, size_t len) {
     this->rx_.push(data[i]);
   }
   return true;
-}
-
-void VirtualUARTComponent::write_array(const uint8_t *data, size_t len) {
-  if (this->tx_sink_ != nullptr) {
-    this->tx_sink_->on_block(data, len);
-  }
 }
 
 bool VirtualUARTComponent::peek_byte(uint8_t *data) {
@@ -49,12 +48,6 @@ bool VirtualUARTComponent::read_array(uint8_t *data, size_t len) {
     this->rx_.pop();
   }
   return true;
-}
-
-UARTFlushResult VirtualUARTComponent::flush() {
-  // A sink took every block in write_array(); without one they were dropped.
-  return this->tx_sink_ != nullptr ? UARTFlushResult::UART_FLUSH_RESULT_SUCCESS
-                                   : UARTFlushResult::UART_FLUSH_RESULT_FAILED;
 }
 
 }  // namespace esphome::uart
