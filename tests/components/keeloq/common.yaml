@@ -27,6 +27,21 @@ keeloq:
     channels: [1, 2]
 
 button:
+  - platform: keeloq
+    keeloq_id: hand_remote_clone
+    take_over:
+      name: Take over hand remote
+  - platform: keeloq
+    keeloq_id: shutter_remote
+    learn:
+      name: Pair shutter 3
+      channels: [3]
+  - platform: keeloq
+    keeloq_id: shutter_remote
+    learn:
+      name: Pair old shutter 2
+      channels: 0x0002
+      legacy: true
   - platform: template
     name: Shutters 1 to 4 and 9 to 12 up
     on_press:

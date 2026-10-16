@@ -103,3 +103,50 @@ def test_channels_as_list_or_mask() -> None:
         _channels([1, 1])
     with pytest.raises(cv.Invalid):
         _channels([17])
+
+
+class _FullConfig(dict):
+    """Two remotes: own_sender has a serial, clone takes one over."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            keeloq=[{"id": "own_sender", "serial": 0x1234500}, {"id": "clone"}]
+        )
+        self.data: dict = {}
+
+    def get_path_for_id(self, remote_id: str) -> list:
+        return ["keeloq", 0 if remote_id == "own_sender" else 1, "id"]
+
+    def get_config_for_path(self, path: list) -> dict:
+        return self[path[0]][path[1]]
+
+
+def _final_validate(*buttons: dict) -> None:
+    from esphome.components.keeloq.button import FINAL_VALIDATE_SCHEMA
+    import esphome.final_validate as fv
+
+    token = fv.full_config.set(_FullConfig())
+    try:
+        for config in buttons:
+            FINAL_VALIDATE_SCHEMA(config)
+    finally:
+        fv.full_config.reset(token)
+
+
+def test_learn_needs_a_serial() -> None:
+    _final_validate({"keeloq_id": "own_sender", "learn": {}})
+    with pytest.raises(cv.Invalid, match="learn needs a remote with serial"):
+        _final_validate({"keeloq_id": "clone", "learn": {}})
+
+
+def test_take_over_works_with_and_without_serial() -> None:
+    _final_validate({"keeloq_id": "own_sender", "take_over": {}})
+    _final_validate({"keeloq_id": "clone", "take_over": {}})
+
+
+def test_learn_and_take_over_exclude_each_other_across_blocks() -> None:
+    with pytest.raises(cv.Invalid, match="both learn and take_over"):
+        _final_validate(
+            {"keeloq_id": "own_sender", "learn": {}},
+            {"keeloq_id": "own_sender", "take_over": {}},
+        )
