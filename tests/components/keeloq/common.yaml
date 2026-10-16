@@ -21,12 +21,34 @@ keeloq:
               args: ["x.counter"]
 
   - id: hand_remote_clone
-    type: jarolift
+    type: auto
     manufacturer_key: "0x1A2B3C4D5E6F7081"
     receiver_id: rcvr
     channels: [1, 2]
 
+  - id: garage_simple
+    type: simple
+    manufacturer_key: "0x0123456789ABCDEF"
+    serial: 0x0ABCDEF
+  - id: garage_normal
+    type: normal
+    manufacturer_key: "0x0123456789ABCDEF"
+    serial: 0x0ABCDE0
+  - id: garage_secure
+    type: secure
+    manufacturer_key: "0x0123456789ABCDEF"
+    serial: 0x0ABCDE1
+    seed: 0x13572468
+
 button:
+  - platform: template
+    name: Garage door
+    on_press:
+      - keeloq.send:
+          id: garage_normal
+          command: 0x2
+      - keeloq.learn: {id: garage_secure}
+      - keeloq.learn: {id: garage_simple}
   - platform: keeloq
     keeloq_id: hand_remote_clone
     take_over:

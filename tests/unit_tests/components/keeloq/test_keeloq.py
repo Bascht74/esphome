@@ -26,9 +26,20 @@ def test_jarolift_remote_is_accepted() -> None:
     assert config["manufacturer_key"] == 0x1A2B3C4D5E6F7081
 
 
-def test_other_types_are_not_there_yet() -> None:
+def test_unknown_types_are_rejected() -> None:
     with pytest.raises(cv.Invalid, match="jarolift"):
-        CONFIG_SCHEMA({**BASE, "type": "normal"})
+        CONFIG_SCHEMA({**BASE, "type": "rolling"})
+
+
+def test_seed_belongs_to_secure_only() -> None:
+    assert (
+        CONFIG_SCHEMA({**BASE, "type": "secure", "seed": 0x13572468})["seed"]
+        == 0x13572468
+    )
+    with pytest.raises(cv.Invalid, match="seed is needed for type secure"):
+        CONFIG_SCHEMA({**BASE, "type": "secure"})
+    with pytest.raises(cv.Invalid, match="seed is needed for type secure"):
+        CONFIG_SCHEMA({**BASE, "seed": 1})
 
 
 def test_key_has_64_bits() -> None:
@@ -85,24 +96,13 @@ def _check_groups(remote: dict, action: dict) -> None:
 
 
 def test_a_frame_needs_channels_from_the_action_or_the_remote() -> None:
-    with_serial = {"id": "own", "serial": 0x1234500}
+    with_serial = {"id": "own", "type": "jarolift", "serial": 0x1234500}
     _check_groups(with_serial, {"id": "own", "channels": 0x0001})
     _check_groups({**with_serial, "channels": 0x0001}, {"id": "own"})
     # Without serial the channels may come from the hand remote.
-    _check_groups({"id": "clone"}, {"id": "clone"})
+    _check_groups({"id": "clone", "type": "jarolift"}, {"id": "clone"})
     with pytest.raises(cv.Invalid, match="own has no channels"):
         _check_groups(with_serial, {"id": "own"})
-
-
-def test_channels_as_list_or_mask() -> None:
-    # Channels 1 and 3 are bits 0 and 2: mask 0x0005.
-    assert _channels([1, 3]) == 0x0005
-    assert _channels(0x0005) == 0x0005
-    assert _channels([16]) == 0x8000
-    with pytest.raises(cv.Invalid, match="each channel only once"):
-        _channels([1, 1])
-    with pytest.raises(cv.Invalid):
-        _channels([17])
 
 
 class _FullConfig(dict):
@@ -150,3 +150,34 @@ def test_learn_and_take_over_exclude_each_other_across_blocks() -> None:
             {"keeloq_id": "own_sender", "learn": {}},
             {"keeloq_id": "own_sender", "take_over": {}},
         )
+
+
+def test_maker_names_map_to_a_learning_type() -> None:
+    assert CONFIG_SCHEMA({**BASE, "type": "BFT", "seed": 1})["type"] == "secure"
+
+
+def test_auto_type_only_takes_over() -> None:
+    config = {k: v for k, v in BASE.items() if k != "serial"}
+    assert (
+        CONFIG_SCHEMA({**config, "type": "auto", "receiver_id": "rx"})["type"] == "auto"
+    )
+    with pytest.raises(cv.Invalid, match="type auto takes the type from a hand remote"):
+        CONFIG_SCHEMA({**BASE, "type": "auto", "receiver_id": "rx"})
+
+
+def test_command_names_only_for_jarolift() -> None:
+    garage = {"id": "garage", "type": "normal", "serial": 0x0ABCDEF}
+    _check_groups(garage, {"id": "garage", "command": 0x2})
+    with pytest.raises(cv.Invalid, match="type normal has no command names"):
+        _check_groups(garage, {"id": "garage", "command": "up"})
+
+
+def test_channels_as_list_or_mask() -> None:
+    # Channels 1 and 3 are bits 0 and 2: mask 0x0005.
+    assert _channels([1, 3]) == 0x0005
+    assert _channels(0x0005) == 0x0005
+    assert _channels([16]) == 0x8000
+    with pytest.raises(cv.Invalid, match="each channel only once"):
+        _channels([1, 1])
+    with pytest.raises(cv.Invalid):
+        _channels([17])

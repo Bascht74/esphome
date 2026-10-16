@@ -343,6 +343,32 @@ TEST(KeeloqRemoteTest, ChannelsPriority) {
   EXPECT_EQ(channels, 0x00F0);
 }
 
+TEST(KeeloqReceiveTest, AutoDetectsTheTypeAndStoresIt) {
+  // A Jarolift frame and an HCS301 normal-learning frame, both with made-up keys: auto finds the right type.
+  construct_app();
+  forget_stored_counters();
+  Remote jarolift;
+  KeeloqRemote clone{KEELOQ_TYPE_AUTO, MANUFACTURER_KEY, 0};
+  clone.set_take_over_key(TAKE_OVER_KEY);
+  static_cast<Component &>(clone).setup();
+  clone.take_over_next_frame();
+  ASSERT_TRUE(receive(clone, on_air(jarolift.remote.next_frame(0x8, 0x0001))));
+  EXPECT_EQ(clone.get_type(), KEELOQ_TYPE_JAROLIFT);
+  KeeloqRemote restarted{KEELOQ_TYPE_AUTO, MANUFACTURER_KEY, 0};
+  restarted.set_take_over_key(TAKE_OVER_KEY);
+  static_cast<Component &>(restarted).setup();
+  EXPECT_EQ(restarted.get_type(), KEELOQ_TYPE_JAROLIFT);
+
+  forget_stored_counters();
+  KeeloqRemote garage{KEELOQ_TYPE_NORMAL, 0x0123456789ABCDEF, 0x0ABCDEF};
+  KeeloqRemote garage_clone{KEELOQ_TYPE_AUTO, 0x0123456789ABCDEF, 0};
+  garage_clone.set_take_over_key(TAKE_OVER_KEY);
+  static_cast<Component &>(garage_clone).setup();
+  garage_clone.take_over_next_frame();
+  ASSERT_TRUE(receive(garage_clone, on_air(garage.next_frame(0x2, 0))));
+  EXPECT_EQ(garage_clone.get_type(), KEELOQ_TYPE_NORMAL);
+}
+
 TEST(KeeloqReceiveTest, DoesNotTakeOverWithoutBeingAsked) {
   forget_stored_counters();
   Remote hand;
@@ -504,6 +530,96 @@ TEST(KeeloqCommandTest, OtherSerialsDoNotFire) {
   Listener motor;
   receive(motor.remote, on_air(neighbour.next_frame(0x8, 0x0001)));
   EXPECT_TRUE(motor.commands.empty());
+}
+
+// HCS301 types. Made-up key, serial and seed. Expected codes from the key derivations of Microchip HCS500
+// (DS40153C, sections 6.1 and 6.2), checked against another implementation of the same derivations.
+constexpr uint64_t HCS_KEY = 0x0123456789ABCDEF;
+constexpr uint32_t HCS_SERIAL = 0x0ABCDEF;
+constexpr uint32_t HCS_SEED = 0x13572468;
+
+// Runs the second half of the pairing sequence at once instead of after the pause.
+class HcsTestRemote : public KeeloqRemote {
+ public:
+  using KeeloqRemote::finish_learn_;
+  using KeeloqRemote::KeeloqRemote;
+};
+
+struct HcsRemote {
+  HcsTestRemote remote;
+  explicit HcsRemote(KeeloqType type) : remote(type, HCS_KEY, HCS_SERIAL) {
+    if (type == KEELOQ_TYPE_SECURE) {
+      this->remote.set_seed(HCS_SEED);
+    }
+    static_cast<Component &>(this->remote).setup();
+    this->remote.set_counter(0x0010);
+  }
+};
+
+TEST(KeeloqHcsTest, FramesOfTheThreeLearningTypes) {
+  // Button S0 (0x2), counter 0x0010: the plain hopping code is 0x21EF0010 (discrimination = serial's low 10 bits).
+  forget_stored_counters();
+  EXPECT_EQ(HcsRemote(KEELOQ_TYPE_SIMPLE).remote.next_frame(0x2, 0).encrypted, 0x0A3073AEu);
+  EXPECT_EQ(HcsRemote(KEELOQ_TYPE_NORMAL).remote.next_frame(0x2, 0).encrypted, 0xA23A7B5Du);
+  EXPECT_EQ(HcsRemote(KEELOQ_TYPE_SECURE).remote.next_frame(0x2, 0).encrypted, 0x60784EFEu);
+}
+
+TEST(KeeloqHcsTest, HcsFramesNeedNoChannels) {
+  forget_stored_counters();
+  uint16_t channels = 0;
+  EXPECT_TRUE(HcsRemote(KEELOQ_TYPE_NORMAL).remote.resolve_channels(false, 0, channels));
+}
+
+TEST(KeeloqHcsTest, HcsFrameIsThePlain66BitWord) {
+  forget_stored_counters();
+  remote_base::KeeloqData data = HcsRemote(KEELOQ_TYPE_NORMAL).remote.next_frame(0x2, 0);
+  EXPECT_EQ(data.address, HCS_SERIAL);
+  EXPECT_EQ(data.command, 0x2);
+  EXPECT_EQ(data.suffix_bits, 0);
+  EXPECT_TRUE(data.repeat);
+}
+
+TEST(KeeloqHcsTest, ReceivedFrameReportsTheCounter) {
+  forget_stored_counters();
+  HcsRemote hand(KEELOQ_TYPE_NORMAL);
+  remote_base::RawTimings timings = on_air(hand.remote.next_frame(0x2, 0));
+  KeeloqRemote listener{KEELOQ_TYPE_NORMAL, HCS_KEY, 0x0000123};
+  KeeloqFrame frame{};
+  listener.add_on_frame_callback([&frame](KeeloqFrame x) { frame = x; });
+  ASSERT_TRUE(receive(listener, timings));
+  EXPECT_EQ(frame.serial, HCS_SERIAL);
+  EXPECT_EQ(frame.counter, 0x0010);
+  EXPECT_EQ(frame.command, 0x2);
+}
+
+TEST(KeeloqHcsTest, NormalLearnSendsTwoConsecutiveFrames) {
+  // HCS500 section 3.2: the receiver learns from two frames with consecutive counters.
+  construct_app();
+  forget_stored_counters();
+  CapturingTransmitter transmitter;
+  HcsRemote r(KEELOQ_TYPE_NORMAL);
+  r.remote.learn(&transmitter, 0, false);
+  App.scheduler.cancel_timeout(&r.remote, uint32_t{0});
+  ASSERT_EQ(transmitter.frames.size(), 1u);
+  r.remote.finish_learn_(&transmitter, 0);
+  ASSERT_EQ(transmitter.frames.size(), 2u);
+  EXPECT_EQ(transmitter.frames[0].first.command, 0x2);
+  EXPECT_EQ(transmitter.frames[1].first.command, 0x2);
+  EXPECT_EQ(r.remote.get_counter(), 0x0012);
+}
+
+TEST(KeeloqHcsTest, SecureLearnSendsAFrameThenTheSeed) {
+  // HCS301 DS21143C figure 4-2: with all four buttons the seed is sent in place of the hopping code.
+  construct_app();
+  forget_stored_counters();
+  CapturingTransmitter transmitter;
+  HcsRemote r(KEELOQ_TYPE_SECURE);
+  r.remote.learn(&transmitter, 0, false);
+  App.scheduler.cancel_timeout(&r.remote, uint32_t{0});
+  r.remote.finish_learn_(&transmitter, 0);
+  ASSERT_EQ(transmitter.frames.size(), 2u);
+  EXPECT_EQ(transmitter.frames[1].first.command, 0xF);
+  EXPECT_EQ(transmitter.frames[1].first.encrypted, HCS_SEED);
 }
 
 }  // namespace esphome::keeloq::testing

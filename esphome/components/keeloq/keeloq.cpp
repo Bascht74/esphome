@@ -19,6 +19,11 @@ static constexpr uint8_t JAROLIFT_STOP = 0x4;
 static constexpr uint8_t JAROLIFT_UP_DOWN = 0xA;
 static constexpr uint8_t JAROLIFT_LEARN_LEGACY = 0x1;
 static constexpr uint32_t JAROLIFT_LEARN_PAUSE_MS = 1000;
+// HCS301 (DS21143C): all four buttons send the seed instead of the hopping code; button S0 alone is 0x2.
+static constexpr uint8_t HCS_SEED_BUTTONS = 0xF;
+static constexpr uint8_t HCS_LEARN_BUTTON = 0x2;
+static constexpr uint32_t HCS_DISCRIMINATION_MASK = 0x3FF;
+static constexpr uint32_t LEARN_PAUSE_MS = 1000;
 static constexpr uint32_t TAKE_OVER_TIMEOUT_MS = 60000;
 // Scheduler ids.
 static constexpr uint32_t LEARN_TIMEOUT_ID = 0;
@@ -68,8 +73,19 @@ static uint64_t normal_learning_key(uint32_t serial, uint64_t manufacturer_key) 
   return high << 32 | decrypt(serial | 0x20000000, manufacturer_key);
 }
 
-static uint64_t device_key(KeeloqType type, uint32_t serial, uint64_t manufacturer_key) {
+// Microchip HCS500 (DS40153C) section 6.2, 32-bit seed: the serial and the seed decrypted.
+static uint64_t secure_learning_key(uint32_t serial, uint32_t seed, uint64_t manufacturer_key) {
+  uint64_t high = decrypt(serial & 0x0FFFFFFF, manufacturer_key);
+  return high << 32 | decrypt(seed, manufacturer_key);
+}
+
+static uint64_t device_key(KeeloqType type, uint32_t serial, uint32_t seed, uint64_t manufacturer_key) {
   switch (type) {
+    case KEELOQ_TYPE_SIMPLE:
+      return manufacturer_key;
+    case KEELOQ_TYPE_SECURE:
+      return secure_learning_key(serial, seed, manufacturer_key);
+    case KEELOQ_TYPE_NORMAL:
     case KEELOQ_TYPE_JAROLIFT:
     default:
       return normal_learning_key(serial, manufacturer_key);
@@ -78,13 +94,13 @@ static uint64_t device_key(KeeloqType type, uint32_t serial, uint64_t manufactur
 
 KeeloqRemote::KeeloqRemote(KeeloqType type, uint64_t manufacturer_key, uint32_t serial)
     : manufacturer_key_(manufacturer_key),
-      device_key_(device_key(type, serial, manufacturer_key)),
+      device_key_(device_key(type, serial, 0, manufacturer_key)),
       serial_(serial),
       type_(type) {}
 
 void KeeloqRemote::use_serial_(uint32_t serial) {
   this->serial_ = serial;
-  this->device_key_ = device_key(this->type_, serial, this->manufacturer_key_);
+  this->device_key_ = device_key(this->type_, serial, this->seed_, this->manufacturer_key_);
   this->known_ = true;
 }
 
@@ -95,6 +111,10 @@ bool KeeloqRemote::resolve_channels(bool has_action_channels, uint16_t action_ch
   }
   channels = this->channels_;
   switch (this->type_) {
+    case KEELOQ_TYPE_SIMPLE:
+    case KEELOQ_TYPE_NORMAL:
+    case KEELOQ_TYPE_SECURE:
+      return true;  // the HCS301 frame has no channels
     case KEELOQ_TYPE_JAROLIFT:
     default:
       if (!this->channels_known_) {
@@ -112,16 +132,45 @@ bool KeeloqRemote::ready_to_send() const {
   return this->known_;
 }
 
+void KeeloqRemote::set_seed(uint32_t seed) {
+  this->seed_ = seed;
+  if (this->known_) {
+    this->use_serial_(this->serial_);
+  }
+}
+
+// The types `auto` tries on a received frame, in this order; secure needs the configured seed.
+static constexpr KeeloqType DETECTABLE_TYPES[] = {KEELOQ_TYPE_JAROLIFT, KEELOQ_TYPE_NORMAL, KEELOQ_TYPE_SIMPLE,
+                                                  KEELOQ_TYPE_SECURE};
+
 bool KeeloqRemote::decrypt_frame_(const remote_base::KeeloqData &data, KeeloqFrame &frame) const {
-  return this->decrypt_frame_as_(this->type_, data, frame);
+  if (this->type_ != KEELOQ_TYPE_AUTO) {
+    return this->decrypt_frame_as_(this->type_, data, frame);
+  }
+  for (KeeloqType type : DETECTABLE_TYPES) {
+    if ((type != KEELOQ_TYPE_SECURE || this->seed_ != 0) && this->decrypt_frame_as_(type, data, frame)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool KeeloqRemote::decrypt_frame_as_(KeeloqType type, const remote_base::KeeloqData &data, KeeloqFrame &frame) const {
   uint64_t key = this->known_ && type == this->type_ && data.address == this->serial_
                      ? this->device_key_
-                     : device_key(type, data.address, this->manufacturer_key_);
+                     : device_key(type, data.address, this->seed_, this->manufacturer_key_);
   uint32_t plain = decrypt(data.encrypted, key);
   switch (type) {
+    case KEELOQ_TYPE_SIMPLE:
+    case KEELOQ_TYPE_NORMAL:
+    case KEELOQ_TYPE_SECURE:
+      // HCS500 section 3.4: the button bits and the serial's 10 low bits inside the code prove the right key.
+      if (data.suffix_bits != 0 || (plain >> 28) != data.command ||
+          ((plain >> 16) & HCS_DISCRIMINATION_MASK) != (data.address & HCS_DISCRIMINATION_MASK)) {
+        return false;
+      }
+      frame.channels = 0;
+      break;
     case KEELOQ_TYPE_JAROLIFT:
     default:
       // A wrong key gives random bits; the serial's low byte inside the code proves the right one.
@@ -312,6 +361,12 @@ remote_base::KeeloqData KeeloqRemote::next_frame(uint8_t command, uint16_t chann
   data.command = command & 0x0F;
   uint32_t plain = this->counter_;
   switch (this->type_) {
+    case KEELOQ_TYPE_SIMPLE:
+    case KEELOQ_TYPE_NORMAL:
+    case KEELOQ_TYPE_SECURE:
+      // Overflow bits 0, the serial's low 10 bits as discrimination.
+      plain |= static_cast<uint32_t>(command & 0x0F) << 28 | (this->serial_ & HCS_DISCRIMINATION_MASK) << 16;
+      break;
     case KEELOQ_TYPE_JAROLIFT:
     default:
       // The channel mask's low byte and the serial's low byte are the discrimination bits; its high byte is the group
@@ -348,8 +403,16 @@ void KeeloqRemote::learn(remote_base::RemoteTransmitterBase *transmitter, uint16
     ESP_LOGW(TAG, "A remote without serial does not learn; it takes over a hand remote");
     return;
   }
-  // A new type adds its sequence here; many receivers learn from one plain frame while in learn mode.
+  // A new type adds its sequence here.
   switch (this->type_) {
+    case KEELOQ_TYPE_SIMPLE:
+    case KEELOQ_TYPE_NORMAL:
+    case KEELOQ_TYPE_SECURE:
+      // HCS500 section 3.2: the receiver learns from two frames with consecutive counters; with secure
+      // learning the second one is the seed.
+      this->send_(transmitter, HCS_LEARN_BUTTON, 0);
+      this->set_timeout("learn", LEARN_PAUSE_MS, [this, transmitter]() { this->finish_learn_(transmitter, 0); });
+      break;
     case KEELOQ_TYPE_JAROLIFT:
     default:
       // Motors made before 2010 learn from one command 0x1, later ones from up+down, then stop.
@@ -365,7 +428,28 @@ void KeeloqRemote::learn(remote_base::RemoteTransmitterBase *transmitter, uint16
 }
 
 void KeeloqRemote::finish_learn_(remote_base::RemoteTransmitterBase *transmitter, uint16_t channels) {
-  this->send_(transmitter, JAROLIFT_STOP, channels);
+  switch (this->type_) {
+    case KEELOQ_TYPE_SECURE:
+      this->send_seed_(transmitter);
+      break;
+    case KEELOQ_TYPE_SIMPLE:
+    case KEELOQ_TYPE_NORMAL:
+      this->send_(transmitter, HCS_LEARN_BUTTON, 0);
+      break;
+    case KEELOQ_TYPE_JAROLIFT:
+    default:
+      this->send_(transmitter, JAROLIFT_STOP, channels);
+      break;
+  }
+}
+
+void KeeloqRemote::send_seed_(remote_base::RemoteTransmitterBase *transmitter) {
+  // DS21143C figure 4-2: the seed takes the place of the hopping code, with all four button bits set.
+  remote_base::KeeloqData data{};
+  data.address = this->serial_;
+  data.command = HCS_SEED_BUTTONS;
+  data.encrypted = this->seed_;
+  transmitter->transmit<remote_base::KeeloqProtocol>(data, this->default_send_times());
 }
 
 void KeeloqRemote::set_counter(uint16_t counter) {

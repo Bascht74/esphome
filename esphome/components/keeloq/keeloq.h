@@ -15,6 +15,11 @@ uint32_t decrypt(uint32_t data, uint64_t key);
 // How the device key and the hopping code are built. Each learning variant is one more value.
 enum KeeloqType : uint8_t {
   KEELOQ_TYPE_JAROLIFT,  // normal learning, 16 discrimination bits, 8 group bits after the word
+  // Microchip HCS301 frame: 4 button bits, 2 overflow bits, 10 discrimination bits (serial's low bits), counter.
+  KEELOQ_TYPE_SIMPLE,      // the manufacturer key is the device key
+  KEELOQ_TYPE_NORMAL,      // device key from the serial
+  KEELOQ_TYPE_SECURE,      // device key from the serial and a 32-bit seed
+  KEELOQ_TYPE_AUTO = 0xF,  // only for take-over: the first frame that decrypts sets the type
 };
 
 // A received frame that decrypted with the manufacturer key.
@@ -76,6 +81,8 @@ class KeeloqRemote : public Component, public remote_base::RemoteReceiverListene
   uint16_t get_channels() const { return this->channels_; }
   // The action's channels, else the remote's; false, with a warning, if a frame needs one and there is none.
   bool resolve_channels(bool has_action_channels, uint16_t action_channels, uint16_t &channels) const;
+  // The seed of secure learning.
+  void set_seed(uint32_t seed);
 
  protected:
   bool decrypt_frame_(const remote_base::KeeloqData &data, KeeloqFrame &frame) const;
@@ -87,12 +94,14 @@ class KeeloqRemote : public Component, public remote_base::RemoteReceiverListene
   void use_serial_(uint32_t serial);
   void send_(remote_base::RemoteTransmitterBase *transmitter, uint8_t command, uint16_t channels);
   void finish_learn_(remote_base::RemoteTransmitterBase *transmitter, uint16_t channels);
+  void send_seed_(remote_base::RemoteTransmitterBase *transmitter);
 
   LazyCallbackManager<void(KeeloqFrame)> frame_callback_;
   LazyCallbackManager<void(KeeloqFrame)> command_callback_;
   uint64_t manufacturer_key_;
   uint64_t device_key_;
   uint32_t serial_;
+  uint32_t seed_{0};
   ESPPreferenceObject pref_{};
   ESPPreferenceObject accepted_pref_{};
   uint32_t take_over_key_{0};

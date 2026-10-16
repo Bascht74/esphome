@@ -29,6 +29,7 @@ CONF_LEGACY = "legacy"
 CONF_MANUFACTURER_KEY = "manufacturer_key"
 CONF_ON_COMMAND = "on_command"
 CONF_ON_FRAME = "on_frame"
+CONF_SEED = "seed"
 CONF_SERIAL = "serial"
 
 keeloq_ns = cg.esphome_ns.namespace("keeloq")
@@ -44,7 +45,21 @@ KeeloqType = keeloq_ns.enum("KeeloqType")
 # A new learning variant adds its key derivation and frame layout in C++ and one entry here.
 KEELOQ_TYPES = {
     "jarolift": KeeloqType.KEELOQ_TYPE_JAROLIFT,
+    "simple": KeeloqType.KEELOQ_TYPE_SIMPLE,
+    "normal": KeeloqType.KEELOQ_TYPE_NORMAL,
+    "secure": KeeloqType.KEELOQ_TYPE_SECURE,
+    # Only for take-over: the first frame that decrypts decides.
+    "auto": KeeloqType.KEELOQ_TYPE_AUTO,
 }
+# Maker names for a learning type above; each maps to one implementation.
+# BFT: secure learning with seed, as other KeeLoq implementations decode it.
+KEELOQ_TYPE_ALIASES = {"bft": "secure"}
+
+
+def _type(value: object) -> str:
+    value = cv.string_strict(value).lower()
+    return cv.enum(KEELOQ_TYPES)(KEELOQ_TYPE_ALIASES.get(value, value))
+
 
 # Per type: the button names as (code, send times), and None for the type's default send times
 # (Jarolift: twice per press). Shade is stop held, sent 20 times. `repeat` on the action overrides.
@@ -95,7 +110,8 @@ def _channels(value: object) -> int:
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(KeeloqRemote),
-        cv.Required(CONF_TYPE): cv.enum(KEELOQ_TYPES, lower=True),
+        cv.Required(CONF_TYPE): _type,
+        cv.Optional(CONF_SEED): cv.hex_uint32_t,
         cv.Required(CONF_MANUFACTURER_KEY): cv.sensitive(_manufacturer_key),
         # Without a serial the remote takes serial and counter over from a hand remote.
         cv.Optional(CONF_SERIAL): cv.All(cv.hex_int, cv.Range(min=0, max=0xFFFFFFF)),
@@ -114,6 +130,15 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 def _frames_need_a_receiver(config: ConfigType) -> ConfigType:
+    if (config[CONF_TYPE] == "secure") != (CONF_SEED in config) and config[
+        CONF_TYPE
+    ] != "auto":
+        raise cv.Invalid("seed is needed for type secure and only there", [CONF_SEED])
+    if config[CONF_TYPE] == "auto" and CONF_SERIAL in config:
+        raise cv.Invalid(
+            "type auto takes the type from a hand remote; with serial, set the type",
+            [CONF_TYPE],
+        )
     for key in (CONF_ON_FRAME, CONF_ON_COMMAND):
         if key in config and CONF_RECEIVER_ID not in config:
             raise cv.Invalid(f"{key} needs receiver_id", [key])
@@ -143,17 +168,29 @@ def _sending_actions(node: object, path: list) -> list[tuple[list, ConfigType]]:
 
 
 def _actions_have_channels(config: ConfigType) -> ConfigType:
-    # A remote with serial has no hand remote to take channels from.
-    if CONF_CHANNELS in config or CONF_SERIAL not in config:
-        return config
+    remote_type = config[CONF_TYPE]
+    # A Jarolift remote with serial has no hand remote to take channels from.
+    needs_channels = (
+        remote_type == "jarolift"
+        and CONF_CHANNELS not in config
+        and CONF_SERIAL in config
+    )
     for path, action in _sending_actions(fv.full_config.get(), []):
-        if str(action[CONF_ID]) != str(config[CONF_ID]) or CONF_CHANNELS in action:
+        if str(action[CONF_ID]) != str(config[CONF_ID]):
             continue
         with cv.prepend_path([cv.ROOT_CONFIG_PATH] + path):
-            raise cv.Invalid(
-                f"{action[CONF_ID]} has no channels; set channels on the action or the remote",
-                [CONF_CHANNELS],
-            )
+            if needs_channels and CONF_CHANNELS not in action:
+                raise cv.Invalid(
+                    f"{action[CONF_ID]} has no channels; set channels on the action or the remote",
+                    [CONF_CHANNELS],
+                )
+            if remote_type not in ("jarolift", "auto") and isinstance(
+                action.get(CONF_COMMAND), str
+            ):
+                raise cv.Invalid(
+                    f"type {remote_type} has no command names, use the button code",
+                    [CONF_COMMAND],
+                )
     return config
 
 
@@ -175,6 +212,8 @@ async def to_code(config: ConfigType) -> None:
         cg.add(var.set_take_over_key(key))
     if (channels := config.get(CONF_CHANNELS)) is not None:
         cg.add(var.set_channels(channels))
+    if (seed := config.get(CONF_SEED)) is not None:
+        cg.add(var.set_seed(seed))
     if CONF_RECEIVER_ID in config:
         await remote_base.register_listener(var, config)
     for conf in config.get(CONF_ON_FRAME, []):
