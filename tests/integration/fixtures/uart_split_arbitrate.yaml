@@ -30,7 +30,6 @@ uart_mock:
 
 uart_split:
   - uart_id: line
-    mode: arbitrate
     send_wait_time: 500ms
     turnaround_time: 50ms
     outputs:

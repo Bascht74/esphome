@@ -7,7 +7,6 @@ from esphome.const import (
     CONF_DIRECTION,
     CONF_DUMMY_RECEIVER,
     CONF_ID,
-    CONF_MODE,
     CONF_OUTPUTS,
     CONF_RX_ONLY,
     CONF_UART_ID,
@@ -30,8 +29,6 @@ CONF_SEND_WAIT_TIME = "send_wait_time"
 CONF_TURNAROUND_TIME = "turnaround_time"
 
 MAX_OUTPUTS = 8
-MODE_ARBITRATE = "arbitrate"
-MODE_COPY = "copy"
 
 _TIME_PERIOD = cv.All(
     cv.positive_time_period_milliseconds,
@@ -43,26 +40,6 @@ def _default_direction(config: ConfigType) -> ConfigType:
     for output in config[CONF_OUTPUTS]:
         if CONF_DIRECTION not in output:
             output[CONF_DIRECTION] = "BOTH" if output[CONF_RX_ONLY] else "RX"
-    return config
-
-
-def _one_writer(config: ConfigType) -> ConfigType:
-    # Two writers would share the transmit line and both read every answer.
-    writers = [
-        (index, output[CONF_ID])
-        for index, output in enumerate(config[CONF_OUTPUTS])
-        if not output[CONF_RX_ONLY]
-    ]
-    if len(writers) > 1:
-        names = ", ".join(
-            f"'{output_id.id}'" if output_id.is_manual else f"output {index}"
-            for index, output_id in writers
-        )
-        raise cv.Invalid(
-            f"Only one output may write, but {names} do. "
-            "Set rx_only: true on all of them but one.",
-            [CONF_OUTPUTS, writers[1][0]],
-        )
     return config
 
 
@@ -85,51 +62,46 @@ OUTPUT_SCHEMA = cv.Schema(
 )
 
 
-def _reject_mirrored_writers(config: ConfigType) -> ConfigType:
+def _writers(config: ConfigType) -> int:
+    return sum(not output[CONF_RX_ONLY] for output in config[CONF_OUTPUTS])
+
+
+def _arbitration(config: ConfigType) -> ConfigType:
+    # One writer gets a plain copy. Several writers take turns on the line.
+    if _writers(config) <= 1:
+        for key in (CONF_SEND_WAIT_TIME, CONF_TURNAROUND_TIME):
+            if key in config:
+                raise cv.Invalid(
+                    f"{key} only applies when more than one output writes.", [key]
+                )
+        return config
     for index, output in enumerate(config[CONF_OUTPUTS]):
         if not output[CONF_RX_ONLY] and output.get(CONF_DIRECTION) == "BOTH":
             raise cv.Invalid(
-                "In arbitrate mode a writer only gets the replies to its own requests; "
+                "A writer gets only the replies to its own requests when several outputs write; "
                 "add an rx_only output with direction: BOTH to see the whole line.",
                 [CONF_OUTPUTS, index, CONF_DIRECTION],
             )
+    config.setdefault(CONF_SEND_WAIT_TIME, _TIME_PERIOD("2000ms"))
+    config.setdefault(CONF_TURNAROUND_TIME, _TIME_PERIOD("600ms"))
     return config
 
 
-_SPLIT_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(UartSplit),
-        cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
-        cv.Required(CONF_OUTPUTS): cv.All(
-            cv.ensure_list(OUTPUT_SCHEMA),
-            cv.Length(min=1, max=MAX_OUTPUTS),
-        ),
-    }
-).extend(cv.COMPONENT_SCHEMA)
-
 CONFIG_SCHEMA = cv.All(
-    cv.typed_schema(
+    cv.Schema(
         {
-            MODE_COPY: cv.All(_SPLIT_SCHEMA, _one_writer),
-            MODE_ARBITRATE: cv.All(
-                _SPLIT_SCHEMA.extend(
-                    {
-                        cv.GenerateID(CONF_ARBITER_ID): cv.declare_id(Arbiter),
-                        cv.Optional(
-                            CONF_SEND_WAIT_TIME, default="2000ms"
-                        ): _TIME_PERIOD,
-                        cv.Optional(
-                            CONF_TURNAROUND_TIME, default="600ms"
-                        ): _TIME_PERIOD,
-                    }
-                ),
-                _reject_mirrored_writers,
+            cv.GenerateID(): cv.declare_id(UartSplit),
+            cv.GenerateID(CONF_ARBITER_ID): cv.declare_id(Arbiter),
+            cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
+            cv.Required(CONF_OUTPUTS): cv.All(
+                cv.ensure_list(OUTPUT_SCHEMA),
+                cv.Length(min=1, max=MAX_OUTPUTS),
             ),
-        },
-        key=CONF_MODE,
-        default_type=MODE_COPY,
-        lower=True,
-    ),
+            cv.Optional(CONF_SEND_WAIT_TIME): _TIME_PERIOD,
+            cv.Optional(CONF_TURNAROUND_TIME): _TIME_PERIOD,
+        }
+    ).extend(cv.COMPONENT_SCHEMA),
+    _arbitration,
     _default_direction,
     _inherit_settings,
 )
@@ -199,7 +171,7 @@ async def to_code(config: ConfigType) -> None:
             cg.add_global(uart.uart_ns.using)
             await uart.debug_to_code(debug, output)
         cg.add(var.add_output(output))
-    if config[CONF_MODE] == MODE_ARBITRATE:
+    if _writers(config) > 1:
         cg.add_define("USE_UART_SPLIT_ARBITER")
         arbiter = cg.new_Pvariable(
             config[CONF_ARBITER_ID],

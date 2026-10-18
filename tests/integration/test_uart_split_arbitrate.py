@@ -1,4 +1,4 @@
-"""Two TCP clients share one serial line through uart_split in arbitrate mode.
+"""Two TCP clients share one serial line through uart_split; its two writers take turns.
 
 Each client has its own uart_tcp port on its own output. The device answers A and B,
 never C. Each client must get only the reply to its own request.

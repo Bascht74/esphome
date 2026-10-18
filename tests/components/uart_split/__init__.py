@@ -9,7 +9,7 @@ def override_manifest(manifest: ComponentManifestOverride) -> None:
     manifest.multi_conf = False
 
     async def to_code_testing(config: ConfigType) -> None:
-        # The gtests build the copy mode and the arbiter.
+        # The gtests build the plain copy and the arbiter.
         cg.add_define("USE_UART_SPLIT_ARBITER")
 
     manifest.to_code = to_code_testing

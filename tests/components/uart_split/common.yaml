@@ -12,11 +12,9 @@ uart_split:
         direction: RX
       - id: distance_tap
         rx_only: true
-      - id: shared_line
-  # Several requesters take turns on one line.
+  # Two outputs write, so they take turns on bus.
   - id: split_arbitrated
-    uart_id: shared_line
-    mode: arbitrate
+    uart_id: bus
     send_wait_time: 1024ms
     turnaround_time: 50ms
     outputs:
@@ -37,9 +35,6 @@ interval:
     then:
       - lambda: |-
           uint8_t byte;
-          if (id(bus).read_byte(&byte)) {
-            id(bus).write_byte(byte);
-          }
           if (id(tap).read_byte(&byte)) {
             id(pins_only).read_byte(&byte);
           }

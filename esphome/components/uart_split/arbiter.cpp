@@ -289,7 +289,6 @@ uart::UARTFlushResult Arbiter::flush(uint8_t index) const {
 
 void Arbiter::dump_config() const {
   ESP_LOGCONFIG(TAG,
-                "  Mode: arbitrate\n"
                 "  Send Wait Time: %" PRIu32 " ms\n"
                 "  Turnaround Time: %" PRIu32 " ms\n"
                 "  Request End: %" PRIu32 " us quiet\n"

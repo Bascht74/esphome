@@ -34,15 +34,6 @@ uart_split:
         rx_only: true
 """
 
-TWO_WRITERS = """
-uart_split:
-  - id: split_bus
-    uart_id: pins
-    outputs:
-      - id: bus
-      - id: second_bus
-"""
-
 ONE_WRITER_TWO_TAPS = """
 uart_split:
   - id: split_bus
@@ -117,19 +108,6 @@ def test_device_that_transmits_on_a_receive_only_output_is_rejected(
     ), errors
 
 
-def test_two_writers_are_rejected(tmp_path: Path) -> None:
-    yaml = BASE + UART.format(baud_rate=9600) + TWO_WRITERS
-    errors = _errors(tmp_path, yaml)
-    assert any(
-        "Only one output may write, but 'bus', 'second_bus' do" in err for err in errors
-    ), errors
-
-
-def test_two_writers_without_ids_are_named_by_position() -> None:
-    with pytest.raises(cv.Invalid, match="but output 0, output 1 do"):
-        uart_split.CONFIG_SCHEMA({CONF_UART_ID: "pins", CONF_OUTPUTS: [{}, {}]})
-
-
 def test_one_writer_and_two_receive_only_outputs_are_valid(tmp_path: Path) -> None:
     yaml = BASE + UART.format(baud_rate=9600) + ONE_WRITER_TWO_TAPS
     assert _errors(tmp_path, yaml) == []
@@ -189,7 +167,6 @@ ARBITRATE = """
 uart_split:
   - id: split_bus
     uart_id: pins
-    mode: arbitrate
 {options}    outputs:
       - id: bus
 {bus_options}      - id: other
@@ -199,7 +176,7 @@ uart_split:
 """
 
 
-def test_arbitrate_rejects_a_writer_that_mirrors(tmp_path: Path) -> None:
+def test_two_writers_reject_a_writer_that_mirrors(tmp_path: Path) -> None:
     yaml = (
         BASE
         + UART.format(baud_rate=9600)
@@ -207,21 +184,25 @@ def test_arbitrate_rejects_a_writer_that_mirrors(tmp_path: Path) -> None:
     )
     errors = _errors(tmp_path, yaml)
     assert any(
-        "a writer only gets the replies to its own requests" in err for err in errors
+        "A writer gets only the replies to its own requests" in err for err in errors
     ), errors
 
 
-def test_send_wait_time_needs_arbitrate(tmp_path: Path) -> None:
+@pytest.mark.parametrize("key", ["send_wait_time", "turnaround_time"])
+def test_timing_with_one_writer_is_rejected(tmp_path: Path, key: str) -> None:
+    """One writer never waits for the line, so the times would do nothing."""
     yaml = (
         BASE
         + UART.format(baud_rate=9600)
-        + SPLIT.replace("    outputs:", "    send_wait_time: 1s\n    outputs:")
+        + SPLIT.replace("    outputs:", f"    {key}: 1s\n    outputs:")
     )
     errors = _errors(tmp_path, yaml)
-    assert any("send_wait_time" in err for err in errors), errors
+    assert any(
+        f"{key} only applies when more than one output writes" in err for err in errors
+    ), errors
 
 
-def test_arbitrate_generates_the_arbiter_with_the_hub_defaults(
+def test_two_writers_get_the_arbiter_with_the_hub_defaults(
     tmp_path: Path, generate_main: Callable[[str | Path], str]
 ) -> None:
     path = tmp_path / "uart_split.yaml"
@@ -235,7 +216,7 @@ def test_arbitrate_generates_the_arbiter_with_the_hub_defaults(
     assert "split_bus->set_arbiter(" in main_cpp
 
 
-def test_arbitrate_takes_the_waveshare_times(
+def test_two_writers_take_the_waveshare_times(
     tmp_path: Path, generate_main: Callable[[str | Path], str]
 ) -> None:
     """Instruction timeout 1024 ms and conflict time gap 50 ms, as set on a Waveshare gateway."""
@@ -250,10 +231,11 @@ def test_arbitrate_takes_the_waveshare_times(
     assert "uart_split::Arbiter(split_bus, 1024, 50);" in main_cpp
 
 
-def test_copy_mode_generates_no_arbiter(
-    tmp_path: Path, generate_main: Callable[[str | Path], str]
+@pytest.mark.parametrize("split", [SPLIT, ONE_WRITER_TWO_TAPS])
+def test_one_writer_generates_no_arbiter(
+    tmp_path: Path, generate_main: Callable[[str | Path], str], split: str
 ) -> None:
     path = tmp_path / "uart_split.yaml"
-    path.write_text(BASE + UART.format(baud_rate=9600) + SPLIT)
+    path.write_text(BASE + UART.format(baud_rate=9600) + split)
     main_cpp = generate_main(path)
     assert "Arbiter" not in main_cpp
