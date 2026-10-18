@@ -257,6 +257,21 @@ TEST_F(Arbitrate, WaitingRequestGoesOutAsTheUartTakesIt) {
   EXPECT_EQ(this->line_.tx_, join({REQUEST_A, REQUEST_B}));
 }
 
+TEST_F(Arbitrate, RequestTheUartDoesNotTakeIsGivenUp) {
+  this->send(A, REQUEST_A, 0);
+  this->send(B, REQUEST_B, 1);
+  this->send(C, REQUEST_C, 2);
+  this->reply(REPLY_A, 30);
+  this->line_.room_ = 0;  // The UART takes nothing, e.g. a tcp_uart whose link is down.
+  // B gets the line at 90 but nothing goes out: given up at 90 + 1000, then 50 ms turnaround.
+  this->run_until(1100);
+  this->line_.room_ = SIZE_MAX;
+  this->run_until(1139);
+  EXPECT_EQ(this->line_.tx_, REQUEST_A);
+  this->run_until(1140);
+  EXPECT_EQ(this->line_.tx_, join({REQUEST_A, REQUEST_C}));
+}
+
 TEST_F(Arbitrate, SnifferSeesTheLineInOrder) {
   this->send(A, REQUEST_A, 0);
   this->send(B, REQUEST_B, 1);

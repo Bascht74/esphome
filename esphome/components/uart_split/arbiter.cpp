@@ -86,10 +86,8 @@ void Arbiter::loop(uint32_t now_us) {
   switch (this->line_) {
     case Line::SENT: {
       this->hand_queued_bytes_(now_us);
-      const Request &req = this->requests_[this->owner_];
-      // Not ACTIVE: the owner already writes its next request, so the last one is on the line.
-      const bool on_line = req.state != RequestState::ACTIVE || req.sent == req.len;
-      if (on_line && elapsed(now_us, this->tx_end_us_, this->send_wait_us_)) {
+      // tx_end_us_ moves with every byte handed over, so a UART that takes nothing (a link that is down) ends it too.
+      if (elapsed(now_us, this->tx_end_us_, this->send_wait_us_)) {
         ESP_LOGD(TAG, "No reply for output %u", this->owner_);
         this->enter_gap_(this->tx_end_us_ + this->send_wait_us_);
       }
