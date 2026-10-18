@@ -1,11 +1,13 @@
 import esphome.codegen as cg
 from esphome.components import uart
+from esphome.config_helpers import filter_source_files_from_defines
 import esphome.config_validation as cv
 from esphome.const import (
     CONF_DEBUG,
     CONF_DIRECTION,
     CONF_DUMMY_RECEIVER,
     CONF_ID,
+    CONF_MODE,
     CONF_OUTPUTS,
     CONF_RX_ONLY,
     CONF_UART_ID,
@@ -21,8 +23,20 @@ MULTI_CONF = True
 uart_split_ns = cg.esphome_ns.namespace("uart_split")
 UartSplit = uart_split_ns.class_("UartSplit", cg.Component)
 UartSplitOutput = uart_split_ns.class_("UartSplitOutput", uart.VirtualUARTComponent)
+Arbiter = uart_split_ns.class_("Arbiter")
+
+CONF_ARBITER_ID = "arbiter_id"
+CONF_SEND_WAIT_TIME = "send_wait_time"
+CONF_TURNAROUND_TIME = "turnaround_time"
 
 MAX_OUTPUTS = 8
+MODE_ARBITRATE = "arbitrate"
+MODE_COPY = "copy"
+
+_TIME_PERIOD = cv.All(
+    cv.positive_time_period_milliseconds,
+    cv.Range(max=cv.TimePeriod(milliseconds=65535)),
+)
 
 
 def _default_direction(config: ConfigType) -> ConfigType:
@@ -50,17 +64,52 @@ OUTPUT_SCHEMA = cv.Schema(
     }
 )
 
+
+def _reject_mirrored_writers(config: ConfigType) -> ConfigType:
+    for index, output in enumerate(config[CONF_OUTPUTS]):
+        if not output[CONF_RX_ONLY] and output.get(CONF_DIRECTION) == "BOTH":
+            raise cv.Invalid(
+                "In arbitrate mode a writer only gets the replies to its own requests; "
+                "add an rx_only output with direction: BOTH to see the whole line.",
+                [CONF_OUTPUTS, index, CONF_DIRECTION],
+            )
+    return config
+
+
+_SPLIT_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.declare_id(UartSplit),
+        cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
+        cv.Required(CONF_OUTPUTS): cv.All(
+            cv.ensure_list(OUTPUT_SCHEMA),
+            cv.Length(min=1, max=MAX_OUTPUTS),
+        ),
+    }
+).extend(cv.COMPONENT_SCHEMA)
+
 CONFIG_SCHEMA = cv.All(
-    cv.Schema(
+    cv.typed_schema(
         {
-            cv.GenerateID(): cv.declare_id(UartSplit),
-            cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
-            cv.Required(CONF_OUTPUTS): cv.All(
-                cv.ensure_list(OUTPUT_SCHEMA),
-                cv.Length(min=1, max=MAX_OUTPUTS),
+            MODE_COPY: _SPLIT_SCHEMA,
+            MODE_ARBITRATE: cv.All(
+                _SPLIT_SCHEMA.extend(
+                    {
+                        cv.GenerateID(CONF_ARBITER_ID): cv.declare_id(Arbiter),
+                        cv.Optional(
+                            CONF_SEND_WAIT_TIME, default="2000ms"
+                        ): _TIME_PERIOD,
+                        cv.Optional(
+                            CONF_TURNAROUND_TIME, default="600ms"
+                        ): _TIME_PERIOD,
+                    }
+                ),
+                _reject_mirrored_writers,
             ),
-        }
-    ).extend(cv.COMPONENT_SCHEMA),
+        },
+        key=CONF_MODE,
+        default_type=MODE_COPY,
+        lower=True,
+    ),
     _default_direction,
     _inherit_settings,
 )
@@ -130,3 +179,17 @@ async def to_code(config: ConfigType) -> None:
             cg.add_global(uart.uart_ns.using)
             await uart.debug_to_code(debug, output)
         cg.add(var.add_output(output))
+    if config[CONF_MODE] == MODE_ARBITRATE:
+        cg.add_define("USE_UART_SPLIT_ARBITER")
+        arbiter = cg.new_Pvariable(
+            config[CONF_ARBITER_ID],
+            var,
+            config[CONF_SEND_WAIT_TIME],
+            config[CONF_TURNAROUND_TIME],
+        )
+        cg.add(var.set_arbiter(arbiter))
+
+
+FILTER_SOURCE_FILES = filter_source_files_from_defines(
+    {"arbiter.cpp": "USE_UART_SPLIT_ARBITER"}
+)

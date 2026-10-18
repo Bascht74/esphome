@@ -1,5 +1,7 @@
 #include "uart_split.h"
+#include "arbiter.h"
 
+#include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
 #include <algorithm>
@@ -9,12 +11,11 @@ namespace esphome::uart_split {
 
 ESPHOME_LOG_TAG(TAG, "uart_split");
 
-static constexpr size_t READ_CHUNK = 64;
-
 void UartSplit::add_output(UartSplitOutput *output) {
   if (this->output_count_ >= MAX_OUTPUTS) {
     return;
   }
+  output->set_index(this->output_count_);
   this->outputs_[this->output_count_++] = output;
 }
 
@@ -23,9 +24,20 @@ void UartSplit::setup() {
   for (uint8_t i = 0; i < this->output_count_; i++) {
     this->outputs_[i]->copy_settings();
   }
+#ifdef USE_UART_SPLIT_ARBITER
+  if (this->arbiter_ != nullptr) {
+    this->arbiter_->setup();
+  }
+#endif
 }
 
 void UartSplit::loop() {
+#ifdef USE_UART_SPLIT_ARBITER
+  if (this->arbiter_ != nullptr) {
+    this->arbiter_->loop(micros());
+    return;
+  }
+#endif
   size_t waiting = this->parent_->available();
   if (waiting == 0) {
     return;
@@ -82,6 +94,11 @@ void UartSplit::dump_config() {
                 "UART Split:\n"
                 "  Outputs: %u",
                 this->output_count_);
+#ifdef USE_UART_SPLIT_ARBITER
+  if (this->arbiter_ != nullptr) {
+    this->arbiter_->dump_config();
+  }
+#endif
   for (uint8_t i = 0; i < this->output_count_; i++) {
     UartSplitOutput *output = this->outputs_[i];
     ESP_LOGCONFIG(TAG,
@@ -122,6 +139,12 @@ void UartSplitOutput::write_array(const uint8_t *data, size_t len) {
     return;
   }
   this->debug_tx_(data, len);
+#ifdef USE_UART_SPLIT_ARBITER
+  if (Arbiter *arbiter = this->split_->arbiter(); arbiter != nullptr) {
+    arbiter->write(this->index_, data, len, micros());
+    return;
+  }
+#endif
   this->split_->parent()->write_array(data, len);
   this->split_->mirror_tx(this, data, len);
 }
@@ -131,6 +154,11 @@ size_t UartSplitOutput::available_for_write() {
     // Takes and drops every byte; 0 would stall a writer that paces on it.
     return SIZE_MAX;
   }
+#ifdef USE_UART_SPLIT_ARBITER
+  if (const Arbiter *arbiter = this->split_->arbiter(); arbiter != nullptr) {
+    return arbiter->available_for_write(this->index_);
+  }
+#endif
   return this->split_->parent()->available_for_write();
 }
 
@@ -138,6 +166,11 @@ uart::UARTFlushResult UartSplitOutput::flush() {
   if (this->rx_only_) {
     return uart::UARTFlushResult::UART_FLUSH_RESULT_ASSUMED_SUCCESS;
   }
+#ifdef USE_UART_SPLIT_ARBITER
+  if (const Arbiter *arbiter = this->split_->arbiter(); arbiter != nullptr) {
+    return arbiter->flush(this->index_);
+  }
+#endif
   return this->split_->parent()->flush();
 }
 

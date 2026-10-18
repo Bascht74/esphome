@@ -12,6 +12,19 @@ uart_split:
         direction: RX
       - id: distance_tap
         rx_only: true
+      - id: shared_line
+  # Several requesters take turns on one line.
+  - id: split_arbitrated
+    uart_id: shared_line
+    mode: arbitrate
+    send_wait_time: 1024ms
+    turnaround_time: 50ms
+    outputs:
+      - id: requester_a
+      - id: requester_b
+      - id: line_tap
+        rx_only: true
+        direction: BOTH
 
 # Checks the baud rate of its UART: an output reports the one of uart_bus.
 sensor:
@@ -29,4 +42,10 @@ interval:
           }
           if (id(tap).read_byte(&byte)) {
             id(pins_only).read_byte(&byte);
+          }
+          if (id(requester_a).available_for_write() > 0) {
+            id(requester_a).write_byte(0x01);
+          }
+          if (id(requester_b).read_byte(&byte)) {
+            id(line_tap).read_byte(&byte);
           }

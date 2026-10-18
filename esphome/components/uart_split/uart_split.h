@@ -2,6 +2,7 @@
 
 #include "esphome/components/uart/uart_virtual.h"
 #include "esphome/core/component.h"
+#include "esphome/core/defines.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -10,8 +11,12 @@ namespace esphome::uart_split {
 
 static constexpr size_t MAX_OUTPUTS = 8;
 static constexpr size_t RX_BUFFER_SIZE = 256;
+static constexpr size_t READ_CHUNK = 64;
 
 class UartSplit;
+#ifdef USE_UART_SPLIT_ARBITER
+class Arbiter;
+#endif
 
 /// One consumer of a shared UART. Writes go to the pins unless this output is receive-only.
 class UartSplitOutput final : public uart::VirtualUARTComponent {
@@ -19,6 +24,9 @@ class UartSplitOutput final : public uart::VirtualUARTComponent {
   explicit UartSplitOutput(UartSplit *split) : VirtualUARTComponent(RX_BUFFER_SIZE), split_(split) {}
   void set_rx_only(bool rx_only) { this->rx_only_ = rx_only; }
   void set_mirror_tx(bool mirror_tx) { this->mirror_tx_ = mirror_tx; }
+
+  /// Position in the split, set by UartSplit::add_output().
+  void set_index(uint8_t index) { this->index_ = index; }
 
   bool rx_only() const { return this->rx_only_; }
   bool mirror_tx() const { return this->mirror_tx_; }
@@ -50,6 +58,7 @@ class UartSplitOutput final : public uart::VirtualUARTComponent {
 
  protected:
   UartSplit *split_;
+  uint8_t index_{0};
   bool rx_only_{false};
   bool mirror_tx_{false};
   bool dropping_{false};
@@ -65,6 +74,10 @@ class UartSplit final : public Component {
   explicit UartSplit(uart::UARTComponent *parent) : parent_(parent) {}
   void add_output(UartSplitOutput *output);
   uart::UARTComponent *parent() const { return this->parent_; }
+#ifdef USE_UART_SPLIT_ARBITER
+  void set_arbiter(Arbiter *arbiter) { this->arbiter_ = arbiter; }
+  Arbiter *arbiter() const { return this->arbiter_; }
+#endif
 
   void setup() override;
   void loop() override;
@@ -76,11 +89,17 @@ class UartSplit final : public Component {
   void mirror_tx(const UartSplitOutput *from, const uint8_t *data, size_t len);
 
  protected:
+#ifdef USE_UART_SPLIT_ARBITER
+  friend class Arbiter;
+#endif
   void push_(uint8_t index, const uint8_t *data, size_t len);
 
   uart::UARTComponent *parent_;
   UartSplitOutput *outputs_[MAX_OUTPUTS]{};
   uint8_t output_count_{0};
+#ifdef USE_UART_SPLIT_ARBITER
+  Arbiter *arbiter_{nullptr};
+#endif
 };
 
 }  // namespace esphome::uart_split

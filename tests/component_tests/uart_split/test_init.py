@@ -144,3 +144,77 @@ def test_split_of_an_output_generates_code(
     assert main_cpp.index("register_component_(split_bus") < main_cpp.index(
         "register_component_(second_split"
     )
+
+
+ARBITRATE = """
+uart_split:
+  - id: split_bus
+    uart_id: pins
+    mode: arbitrate
+{options}    outputs:
+      - id: bus
+{bus_options}      - id: other
+      - id: tap
+        rx_only: true
+        direction: BOTH
+"""
+
+
+def test_arbitrate_rejects_a_writer_that_mirrors(tmp_path: Path) -> None:
+    yaml = (
+        BASE
+        + UART.format(baud_rate=9600)
+        + ARBITRATE.format(options="", bus_options="        direction: BOTH\n")
+    )
+    errors = _errors(tmp_path, yaml)
+    assert any(
+        "a writer only gets the replies to its own requests" in err for err in errors
+    ), errors
+
+
+def test_send_wait_time_needs_arbitrate(tmp_path: Path) -> None:
+    yaml = (
+        BASE
+        + UART.format(baud_rate=9600)
+        + SPLIT.replace("    outputs:", "    send_wait_time: 1s\n    outputs:")
+    )
+    errors = _errors(tmp_path, yaml)
+    assert any("send_wait_time" in err for err in errors), errors
+
+
+def test_arbitrate_generates_the_arbiter_with_the_hub_defaults(
+    tmp_path: Path, generate_main: Callable[[str | Path], str]
+) -> None:
+    path = tmp_path / "uart_split.yaml"
+    path.write_text(
+        BASE
+        + UART.format(baud_rate=9600)
+        + ARBITRATE.format(options="", bus_options="")
+    )
+    main_cpp = generate_main(path)
+    assert "uart_split::Arbiter(split_bus, 2000, 600);" in main_cpp
+    assert "split_bus->set_arbiter(" in main_cpp
+
+
+def test_arbitrate_takes_the_waveshare_times(
+    tmp_path: Path, generate_main: Callable[[str | Path], str]
+) -> None:
+    """Instruction timeout 1024 ms and conflict time gap 50 ms, as set on a Waveshare gateway."""
+    options = "    send_wait_time: 1024ms\n    turnaround_time: 50ms\n"
+    path = tmp_path / "uart_split.yaml"
+    path.write_text(
+        BASE
+        + UART.format(baud_rate=9600)
+        + ARBITRATE.format(options=options, bus_options="")
+    )
+    main_cpp = generate_main(path)
+    assert "uart_split::Arbiter(split_bus, 1024, 50);" in main_cpp
+
+
+def test_copy_mode_generates_no_arbiter(
+    tmp_path: Path, generate_main: Callable[[str | Path], str]
+) -> None:
+    path = tmp_path / "uart_split.yaml"
+    path.write_text(BASE + UART.format(baud_rate=9600) + SPLIT)
+    main_cpp = generate_main(path)
+    assert "Arbiter" not in main_cpp
