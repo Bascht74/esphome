@@ -1,0 +1,46 @@
+esphome:
+  name: uart-split-arbitrate-test
+
+host:
+api:
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: EXTERNAL_COMPONENT_PATH
+
+# uart_split depends on uart; the line itself is the uart_mock below.
+uart:
+  baud_rate: 9600
+  port: /dev/null
+
+# The device on the line: it answers A and B 30 ms after the request, never C.
+uart_mock:
+  - id: line
+    baud_rate: 9600
+    responses:
+      - expect_tx: [0x0A, 0x03, 0x00, 0x01]
+        inject_rx: [0x0A, 0x03, 0xAA, 0xAA]
+        delay: 30ms
+      - expect_tx: [0x0B, 0x03, 0x00, 0x01]
+        inject_rx: [0x0B, 0x03, 0xBB, 0xBB]
+        delay: 30ms
+
+uart_split:
+  - uart_id: line
+    mode: arbitrate
+    send_wait_time: 500ms
+    turnaround_time: 50ms
+    outputs:
+      - id: out_a
+      - id: out_b
+
+uart_tcp:
+  - uart_id: out_a
+    role: server
+    port: 18140
+  - uart_id: out_b
+    role: server
+    port: 18141
