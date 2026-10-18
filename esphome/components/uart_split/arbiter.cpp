@@ -87,7 +87,9 @@ void Arbiter::loop(uint32_t now_us) {
     case Line::SENT: {
       this->hand_queued_bytes_(now_us);
       const Request &req = this->requests_[this->owner_];
-      if (req.sent == req.len && elapsed(now_us, this->tx_end_us_, this->send_wait_us_)) {
+      // Not ACTIVE: the owner already writes its next request, so the last one is on the line.
+      const bool on_line = req.state != RequestState::ACTIVE || req.sent == req.len;
+      if (on_line && elapsed(now_us, this->tx_end_us_, this->send_wait_us_)) {
         ESP_LOGD(TAG, "No reply for output %u", this->owner_);
         this->enter_gap_(this->tx_end_us_ + this->send_wait_us_);
       }
@@ -210,12 +212,13 @@ void Arbiter::enter_gap_(uint32_t from_us) {
 
 void Arbiter::write(uint8_t index, const uint8_t *data, size_t len, uint32_t now_us) {
   Request &req = this->requests_[index];
+  const bool continues = !elapsed(now_us, req.last_write_us, this->request_gap_us_);
   req.last_write_us = now_us;
   if (req.dropping) {
     return;
   }
   const bool handed = req.state == RequestState::ACTIVE && req.sent == req.len;
-  if (handed && this->line_ == Line::SENT) {
+  if (handed && this->line_ == Line::SENT && continues) {
     // More of the request on the line, e.g. its second TCP segment.
     this->send_(data, len, now_us);
     return;
@@ -226,7 +229,7 @@ void Arbiter::write(uint8_t index, const uint8_t *data, size_t len, uint32_t now
     return;
   }
   if (handed || req.state == RequestState::FREE) {
-    // A write of the owner while its reply comes in is its next request.
+    // A later write of the owner is its next request, and it waits like any other.
     req.state = RequestState::OPEN;
     req.len = 0;
     req.sent = 0;

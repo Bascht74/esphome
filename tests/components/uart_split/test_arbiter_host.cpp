@@ -175,6 +175,31 @@ TEST_F(Arbitrate, NextRequestOfTheOwnerWaitsForTheOthers) {
   EXPECT_EQ(this->line_.tx_, join({REQUEST_A, REQUEST_B, REQUEST_A}));
 }
 
+TEST_F(Arbitrate, OwnerAskingAgainWithoutAReplyWaitsForTheOthers) {
+  this->send(A, REQUEST_A, 0);  // To a device that never answers.
+  this->send(B, REQUEST_B, 1);
+  this->send(A, REQUEST_A, 300);  // A gave up on its own and asks again.
+  // Given up at 8 + 1000, then 50 ms turnaround: B first, A's second request waits behind it.
+  this->run_until(1058);
+  EXPECT_EQ(this->line_.tx_, join({REQUEST_A, REQUEST_B}));
+}
+
+TEST_F(Arbitrate, ReplyWithAShortPauseStaysOneReply) {
+  const Bytes first(4, 0xA2);
+  const Bytes rest(5, 0xA2);
+  this->send(A, REQUEST_A, 0);
+  this->send(B, REQUEST_B, 1);
+  this->reply(first, 30);
+  this->reply(rest, 38);  // 8 ms quiet: less than the 10 ms that end a reply.
+  EXPECT_EQ(received(this->a_), join({first, rest}));
+  EXPECT_EQ(received(this->b_), Bytes{});
+  // The reply ends at 48, then 50 ms turnaround.
+  this->run_until(97);
+  EXPECT_EQ(this->line_.tx_, REQUEST_A);
+  this->run_until(98);
+  EXPECT_EQ(this->line_.tx_, join({REQUEST_A, REQUEST_B}));
+}
+
 TEST_F(Arbitrate, RoomTellsAWriterWhenToWait) {
   this->line_.room_ = 100;
   EXPECT_EQ(this->arbiter_.available_for_write(A), 100u);  // Free line: what the UART takes.
