@@ -45,6 +45,10 @@
 #include "esphome/components/radio_frequency/radio_frequency.h"
 #endif
 
+#ifdef USE_WEBSERVER_CAPTIVE
+#include "esphome/components/wifi/wifi_component.h"
+#endif
+
 #ifdef USE_WEBSERVER_LOCAL
 #if USE_WEBSERVER_VERSION == 2
 #include "server_index_v2.h"
@@ -198,6 +202,10 @@ static UrlMatch match_url(const char *url_ptr, size_t url_len, bool only_domain,
 
 EntityMatchResult UrlMatch::match_entity(EntityBase *entity) const {
   EntityMatchResult result{false, this->method.empty()};
+
+  // Internal entities are unreachable by URL unless include_internal is set, as with the native API and MQTT.
+  if (!this->include_internal && entity->is_internal())
+    return result;
 
 #ifdef USE_DEVICES
   Device *entity_device = entity->get_device();
@@ -388,7 +396,15 @@ void DeferredUpdateEventSourceList::on_client_disconnect_(DeferredUpdateEventSou
 }
 #endif
 
-WebServer::WebServer(web_server_base::WebServerBase *base) : base_(base) {}
+#ifdef USE_WEBSERVER_CAPTIVE
+WebServer *global_web_server = nullptr;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+#endif
+
+WebServer::WebServer(web_server_base::WebServerBase *base) : base_(base) {
+#ifdef USE_WEBSERVER_CAPTIVE
+  global_web_server = this;
+#endif
+}
 
 // Kept out of the callers so the 64 bit division is emitted once
 __attribute__((noinline)) static uint32_t uptime_seconds() { return static_cast<uint32_t>(millis_64() / 1000); }
@@ -429,6 +445,11 @@ void WebServer::setup() {
   this->base_->add_handler(&this->events_);
 #endif
   this->base_->add_handler(this);
+#ifdef USE_WEBSERVER_CAPTIVE
+  // Not-found fallback (outside the auth middleware): the OS captive portal probes hit
+  // arbitrary URLs and must get the redirect without credentials.
+  this->base_->get_server()->onNotFound([this](AsyncWebServerRequest *request) { this->handle_not_found_(request); });
+#endif
 
   // OTA is now handled by the web_server OTA platform
 
@@ -444,15 +465,53 @@ void WebServer::setup() {
   });
 }
 void WebServer::loop() {
-  // No SSE clients connected; stop looping until a new client connects via
+  bool keep_looping = this->events_.loop();
+#ifdef USE_WEBSERVER_CAPTIVE
+  this->dns_.loop();
+  keep_looping |= this->dns_.is_running();
+#endif
+  // No SSE clients connected (and no captive DNS to serve); stop looping until a new client connects via
   // enable_loop_soon_any_context(). This is safe because:
   // - set_interval/set_timeout/defer run via the Scheduler, independent of loop()
   // - deferrable_send_state early-outs when no clients are connected
   // - try_send_nodefer (log, ping) iterates sessions which are empty
   // - REST API handlers use defer() which runs via the Scheduler
-  if (!this->events_.loop())
+  if (!keep_looping)
     this->disable_loop();
 }
+
+#ifdef USE_WEBSERVER_CAPTIVE
+void WebServer::start_captive() {
+  // Avoid repeating the log and enable_loop on a second start
+  if (this->dns_.is_running())
+    return;
+  network::IPAddress ip = wifi::global_wifi_component->wifi_soft_ap_ip();
+  char ip_buf[network::IP_ADDRESS_BUFFER_SIZE];
+  if (!this->dns_.start(ip)) {
+    ESP_LOGW(TAG, "AP mode: captive DNS failed to start; open http://%s/ manually", ip.str_to(ip_buf));
+    return;
+  }
+  this->enable_loop();
+  ESP_LOGI(TAG, "AP mode: serving the web interface as captive portal at http://%s/", ip.str_to(ip_buf));
+}
+
+void WebServer::end_captive() { this->dns_.stop(); }
+
+void WebServer::handle_not_found_(AsyncWebServerRequest *request) {
+  // OS captive portal probe while the AP is up: a redirect rather than the page itself, because
+  // the interface resolves its /events and REST paths relative to the page URL.
+  if (this->dns_.is_running() && request->method() == HTTP_GET) {
+    char ip_buf[network::IP_ADDRESS_BUFFER_SIZE];
+    wifi::global_wifi_component->wifi_soft_ap_ip().str_to(ip_buf);
+    // Captive mode requires port 80 (enforced at validation), so no port suffix
+    char location[7 + network::IP_ADDRESS_BUFFER_SIZE + 1];
+    buf_append_printf(location, sizeof(location), 0, "http://%s/", ip_buf);
+    request->redirect(location);
+    return;
+  }
+  request->send(404);
+}
+#endif
 
 #ifdef USE_LOGGER
 
@@ -1157,7 +1216,7 @@ void WebServer::handle_number_request(AsyncWebServerRequest *request, const UrlM
     if (request->method() == HTTP_GET && entity_match.action_is_empty) {
       auto detail = get_request_detail(request);
       json::JsonBuilder builder;
-      this->number_json_(obj, obj->state, detail, builder);
+      this->number_json_(obj, detail, builder);
       send_json(request, builder);
       return;
     }
@@ -1177,13 +1236,16 @@ void WebServer::handle_number_request(AsyncWebServerRequest *request, const UrlM
 }
 
 void WebServer::number_state_json_generator(WebServer *web_server, void *source, json::JsonBuilder &builder) {
-  web_server->number_json_((number::Number *) (source), ((number::Number *) (source))->state, DETAIL_STATE, builder);
+  auto *obj = (number::Number *) (source);
+  web_server->number_json_(obj, DETAIL_STATE, builder);
 }
 void WebServer::number_all_json_generator(WebServer *web_server, void *source, json::JsonBuilder &builder) {
-  web_server->number_json_((number::Number *) (source), ((number::Number *) (source))->state, DETAIL_ALL, builder);
+  auto *obj = (number::Number *) (source);
+  web_server->number_json_(obj, DETAIL_ALL, builder);
 }
-void WebServer::number_json_(number::Number *obj, float value, JsonDetail start_config, json::JsonBuilder &builder) {
+void WebServer::number_json_(number::Number *obj, JsonDetail start_config, json::JsonBuilder &builder) {
   JsonObject root = builder.root();
+  const float value = obj->has_state() ? obj->state : NAN;
 
   const auto uom_ref = obj->get_unit_of_measurement_ref();
   const int8_t accuracy = step_to_accuracy_decimals(obj->traits.get_step());
@@ -1191,7 +1253,7 @@ void WebServer::number_json_(number::Number *obj, float value, JsonDetail start_
   // Need two buffers: one for value, one for state with UOM
   char val_buf[VALUE_ACCURACY_MAX_LEN];
   char state_buf[VALUE_ACCURACY_MAX_LEN];
-  JsonString val_str = linked("\"NaN\"");
+  JsonString val_str = linked("NaN");
   JsonString state_str = linked("NA");
   if (!std::isnan(value)) {
     value_accuracy_to_buf(val_buf, value, accuracy);
@@ -2505,6 +2567,7 @@ void WebServer::handleRequest(AsyncWebServerRequest *request) {
   // Parse URL for component routing
   // Pass HTTP method to disambiguate 3-segment URLs (GET=sub-device state, POST=main device action)
   UrlMatch match = match_url(url.c_str(), url.length(), false, request->method() == HTTP_POST);
+  match.include_internal = this->include_internal_;
 
   // Route to appropriate handler based on domain
   // NOLINTNEXTLINE(readability-simplify-boolean-expr)
