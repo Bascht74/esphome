@@ -15,7 +15,7 @@ uart_split:
   # Two outputs write, so they take turns on bus.
   - id: split_arbitrated
     uart_id: bus
-    send_wait_time: 1024ms
+    send_wait_time: 1000ms
     turnaround_time: 50ms
     outputs:
       - id: requester_a

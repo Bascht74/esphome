@@ -176,11 +176,14 @@ uart_split:
 """
 
 
+TIMES = "    send_wait_time: 1000ms\n    turnaround_time: 50ms\n"
+
+
 def test_two_writers_reject_a_writer_that_mirrors(tmp_path: Path) -> None:
     yaml = (
         BASE
         + UART.format(baud_rate=9600)
-        + ARBITRATE.format(options="", bus_options="        direction: BOTH\n")
+        + ARBITRATE.format(options=TIMES, bus_options="        direction: BOTH\n")
     )
     errors = _errors(tmp_path, yaml)
     assert any(
@@ -202,33 +205,38 @@ def test_timing_with_one_writer_is_rejected(tmp_path: Path, key: str) -> None:
     ), errors
 
 
-def test_two_writers_get_the_arbiter_with_the_hub_defaults(
-    tmp_path: Path, generate_main: Callable[[str | Path], str]
+@pytest.mark.parametrize(
+    "options",
+    ["", "    send_wait_time: 1000ms\n", "    turnaround_time: 50ms\n"],
+    ids=["no time", "no turnaround_time", "no send_wait_time"],
+)
+def test_two_writers_without_both_times_are_rejected(
+    tmp_path: Path, options: str
 ) -> None:
-    path = tmp_path / "uart_split.yaml"
-    path.write_text(
-        BASE
-        + UART.format(baud_rate=9600)
-        + ARBITRATE.format(options="", bus_options="")
-    )
-    main_cpp = generate_main(path)
-    assert "uart_split::Arbiter(split_bus, 2000, 600);" in main_cpp
-    assert "split_bus->set_arbiter(" in main_cpp
-
-
-def test_two_writers_take_the_waveshare_times(
-    tmp_path: Path, generate_main: Callable[[str | Path], str]
-) -> None:
-    """Instruction timeout 1024 ms and conflict time gap 50 ms, as set on a Waveshare gateway."""
-    options = "    send_wait_time: 1024ms\n    turnaround_time: 50ms\n"
-    path = tmp_path / "uart_split.yaml"
-    path.write_text(
+    """Each serial device answers in its own time, so there is no default."""
+    yaml = (
         BASE
         + UART.format(baud_rate=9600)
         + ARBITRATE.format(options=options, bus_options="")
     )
+    errors = _errors(tmp_path, yaml)
+    assert any(
+        "send_wait_time and turnaround_time are required" in err for err in errors
+    ), errors
+
+
+def test_two_writers_with_both_times_get_the_arbiter(
+    tmp_path: Path, generate_main: Callable[[str | Path], str]
+) -> None:
+    path = tmp_path / "uart_split.yaml"
+    path.write_text(
+        BASE
+        + UART.format(baud_rate=9600)
+        + ARBITRATE.format(options=TIMES, bus_options="")
+    )
     main_cpp = generate_main(path)
-    assert "uart_split::Arbiter(split_bus, 1024, 50);" in main_cpp
+    assert "uart_split::Arbiter(split_bus, 1000, 50);" in main_cpp
+    assert "split_bus->set_arbiter(" in main_cpp
 
 
 @pytest.mark.parametrize("split", [SPLIT, ONE_WRITER_TWO_TAPS])

@@ -75,6 +75,11 @@ def _arbitration(config: ConfigType) -> ConfigType:
                     f"{key} only applies when more than one output writes.", [key]
                 )
         return config
+    if CONF_SEND_WAIT_TIME not in config or CONF_TURNAROUND_TIME not in config:
+        raise cv.Invalid(
+            "send_wait_time and turnaround_time are required when more than one output writes. "
+            "Each serial device answers in its own time, so take both from the device."
+        )
     for index, output in enumerate(config[CONF_OUTPUTS]):
         if not output[CONF_RX_ONLY] and output.get(CONF_DIRECTION) == "BOTH":
             raise cv.Invalid(
@@ -82,8 +87,6 @@ def _arbitration(config: ConfigType) -> ConfigType:
                 "add an rx_only output with direction: BOTH to see the whole line.",
                 [CONF_OUTPUTS, index, CONF_DIRECTION],
             )
-    config.setdefault(CONF_SEND_WAIT_TIME, _TIME_PERIOD("2000ms"))
-    config.setdefault(CONF_TURNAROUND_TIME, _TIME_PERIOD("600ms"))
     return config
 
 
