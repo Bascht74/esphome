@@ -18,12 +18,11 @@ static constexpr uint32_t JAROLIFT_SEND_TIMES = 2;
 static constexpr uint8_t JAROLIFT_STOP = 0x4;
 static constexpr uint8_t JAROLIFT_UP_DOWN = 0xA;
 static constexpr uint8_t JAROLIFT_LEARN_LEGACY = 0x1;
-static constexpr uint32_t JAROLIFT_LEARN_PAUSE_MS = 1000;
+static constexpr uint32_t LEARN_PAUSE_MS = 1000;
 // HCS301 (DS21143C): all four buttons send the seed instead of the hopping code; button S0 alone is 0x2.
 static constexpr uint8_t HCS_SEED_BUTTONS = 0xF;
 static constexpr uint8_t HCS_LEARN_BUTTON = 0x2;
 static constexpr uint32_t HCS_DISCRIMINATION_MASK = 0x3FF;
-static constexpr uint32_t LEARN_PAUSE_MS = 1000;
 static constexpr uint32_t TAKE_OVER_TIMEOUT_MS = 60000;
 // Scheduler ids.
 static constexpr uint32_t LEARN_TIMEOUT_ID = 0;
@@ -391,7 +390,8 @@ void KeeloqRemote::learn(remote_base::RemoteTransmitterBase *transmitter, uint16
       // HCS500 section 3.2: the receiver learns from two frames with consecutive counters; with secure
       // learning the second one is the seed.
       this->send_(transmitter, HCS_LEARN_BUTTON, 0);
-      this->set_timeout("learn", LEARN_PAUSE_MS, [this, transmitter]() { this->finish_learn_(transmitter, 0); });
+      this->set_timeout(LEARN_TIMEOUT_ID, LEARN_PAUSE_MS,
+                        [this, transmitter]() { this->finish_learn_(transmitter, 0); });
       break;
     case KEELOQ_TYPE_JAROLIFT:
     default:
@@ -401,7 +401,7 @@ void KeeloqRemote::learn(remote_base::RemoteTransmitterBase *transmitter, uint16
         return;
       }
       this->send_(transmitter, JAROLIFT_UP_DOWN, channels);
-      this->set_timeout(LEARN_TIMEOUT_ID, JAROLIFT_LEARN_PAUSE_MS,
+      this->set_timeout(LEARN_TIMEOUT_ID, LEARN_PAUSE_MS,
                         [this, transmitter, channels]() { this->finish_learn_(transmitter, channels); });
       break;
   }
