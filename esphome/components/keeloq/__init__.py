@@ -127,9 +127,13 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
-def _frames_need_a_receiver(config: ConfigType) -> ConfigType:
+def _seed_only_for_secure(config: ConfigType) -> ConfigType:
     if (config[CONF_TYPE] == "secure") != (CONF_SEED in config):
         raise cv.Invalid("seed is needed for type secure and only there", [CONF_SEED])
+    return config
+
+
+def _frames_need_a_receiver(config: ConfigType) -> ConfigType:
     for key in (CONF_ON_FRAME, CONF_ON_COMMAND):
         if key in config and CONF_RECEIVER_ID not in config:
             raise cv.Invalid(f"{key} needs receiver_id", [key])
@@ -141,7 +145,7 @@ def _frames_need_a_receiver(config: ConfigType) -> ConfigType:
     return config
 
 
-CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, _frames_need_a_receiver)
+CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, _seed_only_for_secure, _frames_need_a_receiver)
 
 
 def _sending_actions(node: object, path: list) -> list[tuple[list, ConfigType]]:
