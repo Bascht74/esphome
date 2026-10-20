@@ -140,15 +140,11 @@ void KeeloqRemote::set_seed(uint32_t seed) {
 }
 
 bool KeeloqRemote::decrypt_frame_(const remote_base::KeeloqData &data, KeeloqFrame &frame) const {
-  return this->decrypt_frame_as_(this->type_, data, frame);
-}
-
-bool KeeloqRemote::decrypt_frame_as_(KeeloqType type, const remote_base::KeeloqData &data, KeeloqFrame &frame) const {
-  uint64_t key = this->known_ && type == this->type_ && data.address == this->serial_
+  uint64_t key = this->known_ && data.address == this->serial_
                      ? this->device_key_
-                     : device_key(type, data.address, this->seed_, this->manufacturer_key_);
+                     : device_key(this->type_, data.address, this->seed_, this->manufacturer_key_);
   uint32_t plain = decrypt(data.encrypted, key);
-  switch (type) {
+  switch (this->type_) {
     case KEELOQ_TYPE_SIMPLE:
     case KEELOQ_TYPE_NORMAL:
     case KEELOQ_TYPE_SECURE:
@@ -171,7 +167,6 @@ bool KeeloqRemote::decrypt_frame_as_(KeeloqType type, const remote_base::KeeloqD
   frame.serial = data.address;
   frame.counter = plain & 0xFFFF;
   frame.command = data.command;
-  frame.type = type;
   return true;
 }
 
@@ -190,7 +185,6 @@ bool KeeloqRemote::on_receive(remote_base::RemoteReceiveData src) {
   if (took_over) {
     this->waiting_ = false;
     this->cancel_timeout(TAKE_OVER_TIMEOUT_ID);
-    this->type_ = frame.type;
     this->use_serial_(frame.serial);
     // A channels from the configuration stays; otherwise the hand remote's channels become the default.
     if (!this->channels_configured_) {
@@ -281,7 +275,6 @@ struct TakenOver {
   uint32_t serial;
   uint16_t reserved;
   uint16_t channels;
-  uint8_t type;
 } __attribute__((packed));
 
 void KeeloqRemote::setup() {
@@ -289,7 +282,6 @@ void KeeloqRemote::setup() {
     this->pref_ = global_preferences->make_preference<TakenOver>(this->take_over_key_, true);
     TakenOver stored{};
     if (this->pref_.load(&stored)) {
-      this->type_ = static_cast<KeeloqType>(stored.type);
       this->use_serial_(stored.serial);
       this->reserved_ = stored.reserved;
       if (!this->channels_configured_) {
@@ -329,7 +321,7 @@ void KeeloqRemote::dump_config() {
 
 void KeeloqRemote::store_reserved_() {
   if (this->take_over_) {
-    TakenOver stored{this->serial_, this->reserved_, this->channels_, static_cast<uint8_t>(this->type_)};
+    TakenOver stored{this->serial_, this->reserved_, this->channels_};
     this->pref_.save(&stored);
   } else {
     this->pref_.save(&this->reserved_);
