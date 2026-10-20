@@ -343,32 +343,6 @@ TEST(KeeloqRemoteTest, ChannelsPriority) {
   EXPECT_EQ(channels, 0x00F0);
 }
 
-TEST(KeeloqReceiveTest, AutoDetectsTheTypeAndStoresIt) {
-  // A Jarolift frame and an HCS301 normal-learning frame, both with made-up keys: auto finds the right type.
-  construct_app();
-  forget_stored_counters();
-  Remote jarolift;
-  KeeloqRemote clone{KEELOQ_TYPE_AUTO, MANUFACTURER_KEY, 0};
-  clone.set_take_over_key(TAKE_OVER_KEY);
-  static_cast<Component &>(clone).setup();
-  clone.take_over_next_frame();
-  ASSERT_TRUE(receive(clone, on_air(jarolift.remote.next_frame(0x8, 0x0001))));
-  EXPECT_EQ(clone.get_type(), KEELOQ_TYPE_JAROLIFT);
-  KeeloqRemote restarted{KEELOQ_TYPE_AUTO, MANUFACTURER_KEY, 0};
-  restarted.set_take_over_key(TAKE_OVER_KEY);
-  static_cast<Component &>(restarted).setup();
-  EXPECT_EQ(restarted.get_type(), KEELOQ_TYPE_JAROLIFT);
-
-  forget_stored_counters();
-  KeeloqRemote garage{KEELOQ_TYPE_NORMAL, 0x0123456789ABCDEF, 0x0ABCDEF};
-  KeeloqRemote garage_clone{KEELOQ_TYPE_AUTO, 0x0123456789ABCDEF, 0};
-  garage_clone.set_take_over_key(TAKE_OVER_KEY);
-  static_cast<Component &>(garage_clone).setup();
-  garage_clone.take_over_next_frame();
-  ASSERT_TRUE(receive(garage_clone, on_air(garage.next_frame(0x2, 0))));
-  EXPECT_EQ(garage_clone.get_type(), KEELOQ_TYPE_NORMAL);
-}
-
 TEST(KeeloqReceiveTest, DoesNotTakeOverWithoutBeingAsked) {
   forget_stored_counters();
   Remote hand;
@@ -590,6 +564,22 @@ TEST(KeeloqHcsTest, ReceivedFrameReportsTheCounter) {
   EXPECT_EQ(frame.serial, HCS_SERIAL);
   EXPECT_EQ(frame.counter, 0x0010);
   EXPECT_EQ(frame.command, 0x2);
+}
+
+TEST(KeeloqHcsTest, TakeOverContinuesTheHandRemotesCounter) {
+  // The hand remote sends counter 0x0010; the copy takes its serial and sends 0x0011 next, as the hand remote would.
+  construct_app();
+  forget_stored_counters();
+  HcsRemote hand(KEELOQ_TYPE_NORMAL);
+  remote_base::RawTimings timings = on_air(hand.remote.next_frame(0x2, 0));
+  KeeloqRemote clone{KEELOQ_TYPE_NORMAL, HCS_KEY, 0};
+  clone.set_take_over_key(TAKE_OVER_KEY);
+  static_cast<Component &>(clone).setup();
+  clone.take_over_next_frame();
+  ASSERT_TRUE(receive(clone, timings));
+  EXPECT_EQ(clone.get_serial(), HCS_SERIAL);
+  EXPECT_EQ(clone.get_counter(), 0x0011);
+  EXPECT_EQ(clone.next_frame(0x2, 0).encrypted, hand.remote.next_frame(0x2, 0).encrypted);
 }
 
 TEST(KeeloqHcsTest, NormalLearnSendsTwoConsecutiveFrames) {

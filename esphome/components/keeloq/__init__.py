@@ -48,8 +48,6 @@ KEELOQ_TYPES = {
     "simple": KeeloqType.KEELOQ_TYPE_SIMPLE,
     "normal": KeeloqType.KEELOQ_TYPE_NORMAL,
     "secure": KeeloqType.KEELOQ_TYPE_SECURE,
-    # Only for take-over: the first frame that decrypts decides.
-    "auto": KeeloqType.KEELOQ_TYPE_AUTO,
 }
 # Maker names for a learning type above; each maps to one implementation.
 # BFT: secure learning with seed, as other KeeLoq implementations decode it.
@@ -130,15 +128,8 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 def _frames_need_a_receiver(config: ConfigType) -> ConfigType:
-    if (config[CONF_TYPE] == "secure") != (CONF_SEED in config) and config[
-        CONF_TYPE
-    ] != "auto":
+    if (config[CONF_TYPE] == "secure") != (CONF_SEED in config):
         raise cv.Invalid("seed is needed for type secure and only there", [CONF_SEED])
-    if config[CONF_TYPE] == "auto" and CONF_SERIAL in config:
-        raise cv.Invalid(
-            "type auto takes the type from a hand remote; with serial, set the type",
-            [CONF_TYPE],
-        )
     for key in (CONF_ON_FRAME, CONF_ON_COMMAND):
         if key in config and CONF_RECEIVER_ID not in config:
             raise cv.Invalid(f"{key} needs receiver_id", [key])
@@ -184,9 +175,7 @@ def _actions_have_channels(config: ConfigType) -> ConfigType:
                     f"{action[CONF_ID]} has no channels; set channels on the action or the remote",
                     [CONF_CHANNELS],
                 )
-            if remote_type not in ("jarolift", "auto") and isinstance(
-                action.get(CONF_COMMAND), str
-            ):
+            if remote_type != "jarolift" and isinstance(action.get(CONF_COMMAND), str):
                 raise cv.Invalid(
                     f"type {remote_type} has no command names, use the button code",
                     [CONF_COMMAND],

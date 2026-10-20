@@ -139,20 +139,8 @@ void KeeloqRemote::set_seed(uint32_t seed) {
   }
 }
 
-// The types `auto` tries on a received frame, in this order; secure needs the configured seed.
-static constexpr KeeloqType DETECTABLE_TYPES[] = {KEELOQ_TYPE_JAROLIFT, KEELOQ_TYPE_NORMAL, KEELOQ_TYPE_SIMPLE,
-                                                  KEELOQ_TYPE_SECURE};
-
 bool KeeloqRemote::decrypt_frame_(const remote_base::KeeloqData &data, KeeloqFrame &frame) const {
-  if (this->type_ != KEELOQ_TYPE_AUTO) {
-    return this->decrypt_frame_as_(this->type_, data, frame);
-  }
-  for (KeeloqType type : DETECTABLE_TYPES) {
-    if ((type != KEELOQ_TYPE_SECURE || this->seed_ != 0) && this->decrypt_frame_as_(type, data, frame)) {
-      return true;
-    }
-  }
-  return false;
+  return this->decrypt_frame_as_(this->type_, data, frame);
 }
 
 bool KeeloqRemote::decrypt_frame_as_(KeeloqType type, const remote_base::KeeloqData &data, KeeloqFrame &frame) const {

@@ -156,15 +156,6 @@ def test_maker_names_map_to_a_learning_type() -> None:
     assert CONFIG_SCHEMA({**BASE, "type": "BFT", "seed": 1})["type"] == "secure"
 
 
-def test_auto_type_only_takes_over() -> None:
-    config = {k: v for k, v in BASE.items() if k != "serial"}
-    assert (
-        CONFIG_SCHEMA({**config, "type": "auto", "receiver_id": "rx"})["type"] == "auto"
-    )
-    with pytest.raises(cv.Invalid, match="type auto takes the type from a hand remote"):
-        CONFIG_SCHEMA({**BASE, "type": "auto", "receiver_id": "rx"})
-
-
 def test_command_names_only_for_jarolift() -> None:
     garage = {"id": "garage", "type": "normal", "serial": 0x0ABCDEF}
     _check_groups(garage, {"id": "garage", "command": 0x2})

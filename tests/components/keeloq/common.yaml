@@ -21,7 +21,7 @@ keeloq:
               args: ["x.counter"]
 
   - id: hand_remote_clone
-    type: auto
+    type: jarolift
     manufacturer_key: "0x1A2B3C4D5E6F7081"
     receiver_id: rcvr
     channels: [1, 2]

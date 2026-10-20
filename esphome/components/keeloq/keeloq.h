@@ -16,10 +16,9 @@ uint32_t decrypt(uint32_t data, uint64_t key);
 enum KeeloqType : uint8_t {
   KEELOQ_TYPE_JAROLIFT,  // normal learning, 16 discrimination bits, 8 group bits after the word
   // Microchip HCS301 frame: 4 button bits, 2 overflow bits, 10 discrimination bits (serial's low bits), counter.
-  KEELOQ_TYPE_SIMPLE,      // the manufacturer key is the device key
-  KEELOQ_TYPE_NORMAL,      // device key from the serial
-  KEELOQ_TYPE_SECURE,      // device key from the serial and a 32-bit seed
-  KEELOQ_TYPE_AUTO = 0xF,  // only for take-over: the first frame that decrypts sets the type
+  KEELOQ_TYPE_SIMPLE,  // the manufacturer key is the device key
+  KEELOQ_TYPE_NORMAL,  // device key from the serial
+  KEELOQ_TYPE_SECURE,  // device key from the serial and a 32-bit seed
 };
 
 // A received frame that decrypted with the manufacturer key.
