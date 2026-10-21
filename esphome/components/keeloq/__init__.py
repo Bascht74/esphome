@@ -105,17 +105,36 @@ def _channels(value: object) -> int:
     return sum(1 << (channel - 1) for channel in channels)
 
 
-CONFIG_SCHEMA = cv.Schema(
+def _only_for(remote_type: str, option: str) -> str:
+    return f"{option} is only valid for type {remote_type}"
+
+
+COMMAND_NAMES_ONLY_FOR_JAROLIFT = (
+    "command names are only valid for type jarolift, use the button code"
+)
+
+
+def _button_code(value: object) -> int:
+    if isinstance(value, str) and value.lower() in JAROLIFT_COMMANDS:
+        raise cv.Invalid(COMMAND_NAMES_ONLY_FOR_JAROLIFT)
+    return cv.int_range(min=0, max=0xF)(value)
+
+
+_REMOTE_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(KeeloqRemote),
-        cv.Required(CONF_TYPE): _type,
-        cv.Optional(CONF_SEED): cv.hex_uint32_t,
         cv.Required(CONF_MANUFACTURER_KEY): cv.sensitive(_manufacturer_key),
         # Without a serial the remote takes serial and counter over from a hand remote.
         cv.Optional(CONF_SERIAL): cv.All(cv.hex_int, cv.Range(min=0, max=0xFFFFFFF)),
-        cv.Optional(CONF_CHANNELS): _channels,
         cv.Optional(CONF_RECEIVER_ID): cv.use_id(remote_base.RemoteReceiverBase),
         cv.Optional(CONF_ON_FRAME): automation.validate_automation({}),
+        cv.Optional(CONF_SEED): cv.invalid(_only_for("secure", CONF_SEED)),
+    }
+).extend(cv.COMPONENT_SCHEMA)
+
+JAROLIFT_SCHEMA = _REMOTE_SCHEMA.extend(
+    {
+        cv.Optional(CONF_CHANNELS): _channels,
         # Like a motor: a new press of this serial, once, with replay protection.
         cv.Optional(CONF_ON_COMMAND): automation.validate_automation(
             {
@@ -124,13 +143,22 @@ CONFIG_SCHEMA = cv.Schema(
             }
         ),
     }
-).extend(cv.COMPONENT_SCHEMA)
+)
 
-
-def _seed_only_for_secure(config: ConfigType) -> ConfigType:
-    if (config[CONF_TYPE] == "secure") != (CONF_SEED in config):
-        raise cv.Invalid("seed is needed for type secure and only there", [CONF_SEED])
-    return config
+# The HCS301 types have no channels and no command names.
+HCS301_SCHEMA = _REMOTE_SCHEMA.extend(
+    {
+        cv.Optional(CONF_CHANNELS): cv.invalid(_only_for("jarolift", CONF_CHANNELS)),
+        cv.Optional(CONF_ON_COMMAND): automation.validate_automation(
+            {
+                cv.Optional(CONF_CHANNEL): cv.invalid(
+                    _only_for("jarolift", CONF_CHANNEL)
+                ),
+                cv.Optional(CONF_COMMAND): _button_code,
+            }
+        ),
+    }
+)
 
 
 def _frames_need_a_receiver(config: ConfigType) -> ConfigType:
@@ -145,7 +173,20 @@ def _frames_need_a_receiver(config: ConfigType) -> ConfigType:
     return config
 
 
-CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, _seed_only_for_secure, _frames_need_a_receiver)
+CONFIG_SCHEMA = cv.All(
+    # A maker name becomes its learning type first.
+    cv.Schema({cv.Required(CONF_TYPE): _type}, extra=cv.ALLOW_EXTRA),
+    cv.typed_schema(
+        {
+            "jarolift": JAROLIFT_SCHEMA,
+            "simple": HCS301_SCHEMA,
+            "normal": HCS301_SCHEMA,
+            "secure": HCS301_SCHEMA.extend({cv.Required(CONF_SEED): cv.hex_uint32_t}),
+        },
+        enum=KEELOQ_TYPES,
+    ),
+    _frames_need_a_receiver,
+)
 
 
 def _find_actions(
@@ -176,6 +217,17 @@ def _take_over_has_a_receiver(config: ConfigType) -> ConfigType:
     return config
 
 
+def _reject_jarolift_options(options: ConfigType, remote_type: str) -> None:
+    """For actions and buttons, which see the remote's type only in the final validation."""
+    if remote_type == "jarolift":
+        return
+    for key in (CONF_CHANNELS, CONF_LEGACY):
+        if key in options:
+            raise cv.Invalid(_only_for("jarolift", key), [key])
+    if isinstance(options.get(CONF_COMMAND), str):
+        raise cv.Invalid(COMMAND_NAMES_ONLY_FOR_JAROLIFT, [CONF_COMMAND])
+
+
 def _actions_have_channels(config: ConfigType) -> ConfigType:
     remote_type = config[CONF_TYPE]
     # A Jarolift remote with serial has no hand remote to take channels from.
@@ -194,11 +246,7 @@ def _actions_have_channels(config: ConfigType) -> ConfigType:
                     f"{action[CONF_ID]} has no channels; set channels on the action or the remote",
                     [CONF_CHANNELS],
                 )
-            if remote_type != "jarolift" and isinstance(action.get(CONF_COMMAND), str):
-                raise cv.Invalid(
-                    f"type {remote_type} has no command names, use the button code",
-                    [CONF_COMMAND],
-                )
+            _reject_jarolift_options(action, remote_type)
     return config
 
 

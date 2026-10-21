@@ -37,10 +37,40 @@ def test_seed_belongs_to_secure_only() -> None:
         CONFIG_SCHEMA({**BASE, "type": "secure", "seed": 0x13572468})["seed"]
         == 0x13572468
     )
-    with pytest.raises(cv.Invalid, match="seed is needed for type secure"):
+    with pytest.raises(cv.Invalid, match="required key not provided"):
         CONFIG_SCHEMA({**BASE, "type": "secure"})
-    with pytest.raises(cv.Invalid, match="seed is needed for type secure"):
+    with pytest.raises(cv.Invalid, match="seed is only valid for type secure"):
         CONFIG_SCHEMA({**BASE, "seed": 1})
+
+
+def test_jarolift_remote_keeps_its_channels_and_filters() -> None:
+    """A Jarolift config with channels and a channel filter stays valid unchanged."""
+    config = CONFIG_SCHEMA(
+        {
+            **BASE,
+            "channels": [1, 2],
+            "receiver_id": "rx",
+            "on_command": [{"channel": 1, "command": "up", "then": []}],
+        }
+    )
+    # Channels 1 and 2 are bits 0 and 1: mask 0x0003.
+    assert config["channels"] == 0x0003
+    assert config["on_command"][0]["channel"] == 1
+
+
+def test_other_types_reject_the_jarolift_options() -> None:
+    """A garage remote of type normal has no channels and no command names."""
+    garage = {**BASE, "type": "normal", "receiver_id": "rx"}
+    with pytest.raises(cv.Invalid, match="channels is only valid for type jarolift"):
+        CONFIG_SCHEMA({**garage, "channels": [1]})
+    with pytest.raises(cv.Invalid, match="channel is only valid for type jarolift"):
+        CONFIG_SCHEMA({**garage, "on_command": [{"channel": 1, "then": []}]})
+    with pytest.raises(
+        cv.Invalid, match="command names are only valid for type jarolift"
+    ):
+        CONFIG_SCHEMA({**garage, "on_command": [{"command": "up", "then": []}]})
+    # The button code is fine.
+    CONFIG_SCHEMA({**garage, "on_command": [{"command": 0x2, "then": []}]})
 
 
 def test_key_has_64_bits() -> None:
@@ -85,10 +115,10 @@ def test_shade_is_stop_sent_20_times() -> None:
     assert JAROLIFT_COMMANDS["up"] == (0x8, None)
 
 
-def _check_groups(remote: dict, action: dict) -> None:
+def _check_groups(remote: dict, action: dict, action_name: str = "keeloq.send") -> None:
     import esphome.final_validate as fv
 
-    full = {"keeloq": [remote], "button": [{"on_press": [{"keeloq.send": action}]}]}
+    full = {"keeloq": [remote], "button": [{"on_press": [{action_name: action}]}]}
     token = fv.full_config.set(full)
     try:
         _actions_have_channels(remote)
@@ -129,14 +159,20 @@ def test_take_over_needs_a_receiver() -> None:
 
 
 class _FullConfig(dict):
-    """Three remotes: own_sender has a serial, clone takes one over, no_receiver only sends."""
+    """own_sender has a serial, clone takes one over, no_receiver only sends; garage is normal."""
 
     def __init__(self) -> None:
         super().__init__(
             keeloq=[
-                {"id": "own_sender", "serial": 0x1234500, "receiver_id": "rx"},
-                {"id": "clone", "receiver_id": "rx"},
-                {"id": "no_receiver", "serial": 0x7654300},
+                {
+                    "id": "own_sender",
+                    "type": "jarolift",
+                    "serial": 0x1234500,
+                    "receiver_id": "rx",
+                },
+                {"id": "clone", "type": "jarolift", "receiver_id": "rx"},
+                {"id": "no_receiver", "type": "jarolift", "serial": 0x7654300},
+                {"id": "garage", "type": "normal", "serial": 0x0ABCDEF},
             ]
         )
         self.data: dict = {}
@@ -193,8 +229,38 @@ def test_maker_names_map_to_a_learning_type() -> None:
 def test_command_names_only_for_jarolift() -> None:
     garage = {"id": "garage", "type": "normal", "serial": 0x0ABCDEF}
     _check_groups(garage, {"id": "garage", "command": 0x2})
-    with pytest.raises(cv.Invalid, match="type normal has no command names"):
+    with pytest.raises(
+        cv.Invalid, match="command names are only valid for type jarolift"
+    ):
         _check_groups(garage, {"id": "garage", "command": "up"})
+
+
+def test_actions_of_other_types_reject_channels_and_legacy() -> None:
+    """keeloq.send and keeloq.learn take channels and legacy only for a Jarolift remote."""
+    garage = {"id": "garage", "type": "normal", "serial": 0x0ABCDEF}
+    with pytest.raises(cv.Invalid, match="channels is only valid for type jarolift"):
+        _check_groups(garage, {"id": "garage", "command": 0x2, "channels": 0x0001})
+    with pytest.raises(cv.Invalid, match="legacy is only valid for type jarolift"):
+        _check_groups(garage, {"id": "garage", "legacy": True}, "keeloq.learn")
+    # A Jarolift remote keeps both.
+    shutter = {"id": "shutter", "type": "jarolift", "serial": 0x1234500}
+    _check_groups(
+        shutter, {"id": "shutter", "channels": 0x0001, "legacy": True}, "keeloq.learn"
+    )
+
+
+def test_learn_button_of_other_types_rejects_channels_and_legacy() -> None:
+    """The learn button takes channels and legacy only for a Jarolift remote."""
+    _final_validate({"keeloq_id": "garage", "learn": {}})
+    with pytest.raises(cv.Invalid, match="channels is only valid for type jarolift"):
+        _final_validate({"keeloq_id": "garage", "learn": {"channels": 0x0001}})
+    # Also when false: the option itself is Jarolift only.
+    with pytest.raises(cv.Invalid, match="legacy is only valid for type jarolift"):
+        _final_validate({"keeloq_id": "garage", "learn": {"legacy": False}})
+    # A Jarolift remote keeps both.
+    _final_validate(
+        {"keeloq_id": "own_sender", "learn": {"channels": 0x0001, "legacy": True}}
+    )
 
 
 def test_channels_as_list_or_mask() -> None:

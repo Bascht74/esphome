@@ -1,11 +1,19 @@
 import esphome.codegen as cg
 from esphome.components import button, remote_base
 import esphome.config_validation as cv
-from esphome.const import CONF_CHANNELS, ENTITY_CATEGORY_CONFIG
+from esphome.const import CONF_CHANNELS, CONF_TYPE, ENTITY_CATEGORY_CONFIG
 import esphome.final_validate as fv
 from esphome.types import ConfigType
 
-from .. import CONF_LEGACY, CONF_SERIAL, DOMAIN, KeeloqRemote, _channels, keeloq_ns
+from .. import (
+    CONF_LEGACY,
+    CONF_SERIAL,
+    DOMAIN,
+    KeeloqRemote,
+    _channels,
+    _reject_jarolift_options,
+    keeloq_ns,
+)
 
 CONF_KEELOQ_ID = "keeloq_id"
 CONF_LEARN = "learn"
@@ -23,7 +31,7 @@ CONFIG_SCHEMA = cv.All(
         .extend(
             {
                 cv.Optional(CONF_CHANNELS): _channels,
-                cv.Optional(CONF_LEGACY, default=False): cv.boolean,
+                cv.Optional(CONF_LEGACY): cv.boolean,
             }
         )
         .extend(remote_base.REMOTE_TRANSMITTABLE_SCHEMA),
@@ -43,6 +51,9 @@ def _learn_or_take_over(config: ConfigType) -> ConfigType:
         raise cv.Invalid("learn needs a remote with serial", [CONF_LEARN])
     if CONF_TAKE_OVER in config and remote_base.CONF_RECEIVER_ID not in remote:
         raise cv.Invalid("take_over needs a remote with receiver_id", [CONF_TAKE_OVER])
+    if CONF_LEARN in config:
+        with cv.prepend_path(CONF_LEARN):
+            _reject_jarolift_options(config[CONF_LEARN], remote[CONF_TYPE])
     modes = (
         fv.full_config.get()
         .data.setdefault(DOMAIN, {})
@@ -72,7 +83,7 @@ async def to_code(config: ConfigType) -> None:
         await remote_base.register_transmittable(var, conf)
         if (channels := conf.get(CONF_CHANNELS)) is not None:
             cg.add(var.set_channels(channels))
-        cg.add(var.set_legacy(conf[CONF_LEGACY]))
+        cg.add_optional(var.set_legacy, conf.get(CONF_LEGACY))
     if (conf := config.get(CONF_TAKE_OVER)) is not None:
         var = await button.new_button(conf)
         await cg.register_parented(var, config[CONF_KEELOQ_ID])
