@@ -10,6 +10,7 @@ from esphome.components.keeloq import (
     _actions_have_channels,
     _channels,
     _command,
+    _take_over_has_a_receiver,
 )
 import esphome.config_validation as cv
 
@@ -105,17 +106,44 @@ def test_a_frame_needs_channels_from_the_action_or_the_remote() -> None:
         _check_groups(with_serial, {"id": "own"})
 
 
+def _check_take_over(remote: dict) -> None:
+    import esphome.final_validate as fv
+
+    full = {
+        "keeloq": [remote],
+        "button": [{"on_press": [{"keeloq.take_over": {"id": "own"}}]}],
+    }
+    token = fv.full_config.set(full)
+    try:
+        _take_over_has_a_receiver(remote)
+    finally:
+        fv.full_config.reset(token)
+
+
+def test_take_over_needs_a_receiver() -> None:
+    """keeloq.take_over listens for the hand remote, so its remote needs receiver_id."""
+    _check_take_over({"id": "own", "serial": 0x1234500, "receiver_id": "rx"})
+    # Also with channels on the remote, which skips the channels check.
+    with pytest.raises(cv.Invalid, match="keeloq.take_over needs receiver_id on own"):
+        _check_take_over({"id": "own", "serial": 0x1234500, "channels": 0x0001})
+
+
 class _FullConfig(dict):
-    """Two remotes: own_sender has a serial, clone takes one over."""
+    """Three remotes: own_sender has a serial, clone takes one over, no_receiver only sends."""
 
     def __init__(self) -> None:
         super().__init__(
-            keeloq=[{"id": "own_sender", "serial": 0x1234500}, {"id": "clone"}]
+            keeloq=[
+                {"id": "own_sender", "serial": 0x1234500, "receiver_id": "rx"},
+                {"id": "clone", "receiver_id": "rx"},
+                {"id": "no_receiver", "serial": 0x7654300},
+            ]
         )
         self.data: dict = {}
 
     def get_path_for_id(self, remote_id: str) -> list:
-        return ["keeloq", 0 if remote_id == "own_sender" else 1, "id"]
+        ids = [remote["id"] for remote in self["keeloq"]]
+        return ["keeloq", ids.index(remote_id), "id"]
 
     def get_config_for_path(self, path: list) -> dict:
         return self[path[0]][path[1]]
@@ -142,6 +170,12 @@ def test_learn_needs_a_serial() -> None:
 def test_take_over_works_with_and_without_serial() -> None:
     _final_validate({"keeloq_id": "own_sender", "take_over": {}})
     _final_validate({"keeloq_id": "clone", "take_over": {}})
+
+
+def test_take_over_button_needs_a_receiver() -> None:
+    """The take_over button listens for the hand remote, so its remote needs receiver_id."""
+    with pytest.raises(cv.Invalid, match="take_over needs a remote with receiver_id"):
+        _final_validate({"keeloq_id": "no_receiver", "take_over": {}})
 
 
 def test_learn_and_take_over_exclude_each_other_across_blocks() -> None:
