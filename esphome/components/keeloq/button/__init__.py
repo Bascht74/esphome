@@ -38,8 +38,11 @@ CONFIG_SCHEMA = cv.All(
 # A remote is either ESPHome's own sender (learn) or a copy of a hand remote (take_over), not both.
 def _learn_or_take_over(config: ConfigType) -> ConfigType:
     remote_id = config[CONF_KEELOQ_ID]
-    if CONF_LEARN in config and CONF_SERIAL not in _remote_config(remote_id):
+    remote = _remote_config(remote_id)
+    if CONF_LEARN in config and CONF_SERIAL not in remote:
         raise cv.Invalid("learn needs a remote with serial", [CONF_LEARN])
+    if CONF_TAKE_OVER in config and remote_base.CONF_RECEIVER_ID not in remote:
+        raise cv.Invalid("take_over needs a remote with receiver_id", [CONF_TAKE_OVER])
     modes = (
         fv.full_config.get()
         .data.setdefault(DOMAIN, {})
