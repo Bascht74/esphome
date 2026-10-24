@@ -1247,6 +1247,11 @@ const char *ListEntitiesCoverResponse::dump_to(DumpBuffer &out) const {
 #endif
   dump_field(out, ESPHOME_PSTR("supports_stop_tilt"), this->supports_stop_tilt);
   dump_field(out, ESPHOME_PSTR("supports_toggle"), this->supports_toggle);
+#ifdef USE_COVER_SPEED
+  for (const auto &it : *this->supported_speeds) {
+    dump_field(out, ESPHOME_PSTR("supported_speeds"), it, 4);
+  }
+#endif
   return out.c_str();
 }
 const char *CoverStateResponse::dump_to(DumpBuffer &out) const {
@@ -1273,6 +1278,12 @@ const char *CoverCommandRequest::dump_to(DumpBuffer &out) const {
 #endif
   dump_field(out, ESPHOME_PSTR("stop_tilt"), this->stop_tilt);
   dump_field(out, ESPHOME_PSTR("toggle"), this->toggle);
+#ifdef USE_COVER_SPEED
+  dump_field(out, ESPHOME_PSTR("has_speed"), this->has_speed);
+#endif
+#ifdef USE_COVER_SPEED
+  dump_field(out, ESPHOME_PSTR("speed"), this->speed);
+#endif
   return out.c_str();
 }
 #endif

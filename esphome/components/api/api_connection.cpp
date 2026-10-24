@@ -556,6 +556,9 @@ uint16_t APIConnection::try_send_cover_info(EntityBase *entity, APIConnection *c
   msg.supports_stop = traits.get_supports_stop();
   msg.supports_stop_tilt = traits.get_supports_stop_tilt();
   msg.supports_toggle = traits.get_supports_toggle();
+#ifdef USE_COVER_SPEED
+  msg.supported_speeds = &cover->get_supported_speeds();
+#endif
   return fill_and_encode_entity_info_with_device_class(cover, msg, msg.device_class, conn, remaining_size);
 }
 void APIConnection::on_cover_command_request(const CoverCommandRequest &msg) {
@@ -570,6 +573,10 @@ void APIConnection::on_cover_command_request(const CoverCommandRequest &msg) {
     call.set_command_stop_tilt();
   if (msg.toggle)
     call.set_command_toggle();
+#ifdef USE_COVER_SPEED
+  if (msg.has_speed)
+    call.set_speed(msg.speed.c_str(), msg.speed.size());
+#endif
   call.perform();
 }
 #endif

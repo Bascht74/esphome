@@ -4,6 +4,7 @@
 #include "esphome/core/log.h"
 #include "esphome/core/progmem.h"
 
+#include <cstring>
 #include <strings.h>
 
 namespace esphome::cover {
@@ -71,6 +72,25 @@ CoverCall &CoverCall::set_tilt(float tilt) {
   this->tilt_ = tilt;
   return *this;
 }
+#ifdef USE_COVER_SPEED
+CoverCall &CoverCall::set_speed(const char *speed) {
+  return this->set_speed(speed, speed != nullptr ? strlen(speed) : 0);
+}
+CoverCall &CoverCall::set_speed(const char *speed, size_t len) {
+  this->speed_ = nullptr;
+  if (len == 0)
+    return *this;
+  // Keep a pointer to the list entry, so the call does not depend on the caller's string
+  for (const char *entry : this->parent_->get_supported_speeds()) {
+    if (strncmp(entry, speed, len) == 0 && entry[len] == '\0') {
+      this->speed_ = entry;
+      return *this;
+    }
+  }
+  ESP_LOGW(TAG, "'%s': speed '%.*s' unsupported", LOG_STR_ARG(this->parent_->get_log_name()), (int) len, speed);
+  return *this;
+}
+#endif
 void CoverCall::perform() {
   ESP_LOGV(TAG, "'%s' - Setting", LOG_STR_ARG(this->parent_->get_log_name()));
   auto traits = this->parent_->get_traits();
@@ -94,6 +114,11 @@ void CoverCall::perform() {
   if (this->toggle_.has_value()) {
     ESP_LOGV(TAG, "  Command: TOGGLE");
   }
+#ifdef USE_COVER_SPEED
+  if (this->speed_ != nullptr) {
+    ESP_LOGV(TAG, "  Speed: %s", this->speed_);
+  }
+#endif
   this->parent_->control(*this);
 }
 const optional<float> &CoverCall::get_position() const { return this->position_; }
@@ -146,6 +171,12 @@ void CoverCall::validate_() {
       this->toggle_.reset();
     }
   }
+#ifdef USE_COVER_SPEED
+  if (this->speed_ != nullptr && !this->position_.has_value()) {
+    ESP_LOGW(TAG, "'%s': speed needs open, close or a position", name);
+    this->speed_ = nullptr;
+  }
+#endif
 }
 CoverCall &CoverCall::set_stop(bool stop) {
   this->stop_ = stop;

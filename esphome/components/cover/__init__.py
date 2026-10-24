@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from esphome import automation
 from esphome.automation import maybe_simple_id
@@ -17,6 +18,7 @@ from esphome.const import (
     CONF_POSITION,
     CONF_POSITION_COMMAND_TOPIC,
     CONF_POSITION_STATE_TOPIC,
+    CONF_SPEED,
     CONF_STATE,
     CONF_STOP,
     CONF_TILT,
@@ -36,7 +38,7 @@ from esphome.const import (
     DEVICE_CLASS_SHUTTER,
     DEVICE_CLASS_WINDOW,
 )
-from esphome.core import CORE, CoroPriority, coroutine_with_priority
+from esphome.core import CORE, ID, CoroPriority, coroutine_with_priority
 from esphome.core.entity_helpers import (
     entity_duplicate_validator,
     queue_entity_register,
@@ -44,7 +46,7 @@ from esphome.core.entity_helpers import (
     setup_entity,
 )
 from esphome.cpp_generator import MockObj, MockObjClass
-from esphome.types import ConfigType, SafeExpType
+from esphome.types import ConfigType, SafeExpType, TemplateArgsType
 
 IS_PLATFORM_COMPONENT = True
 
@@ -189,6 +191,35 @@ def cover_schema(
     return _COVER_SCHEMA.extend(schema)
 
 
+_SPEEDS_SCHEMA = cv.All(
+    cv.ensure_list(cv.All(cv.string_strict, cv.Length(min=1))),
+    cv.Length(min=1),
+)
+
+
+def validate_speeds(value: Any) -> list[str]:
+    """Validate a platform's speed names; no speed at all means the cover's default speed."""
+    value = _SPEEDS_SCHEMA(value)
+    errors = [
+        cv.Invalid(
+            f"Found duplicate speed '{speed}'. Speeds must have unique names.", [i]
+        )
+        for i, speed in enumerate(value)
+        if speed in value[:i]
+    ]
+    if errors:
+        raise cv.MultipleInvalid(errors)
+    return value
+
+
+def set_speeds(var: MockObj, speeds: list[str]) -> None:
+    """Point the cover at a shared flash table of speed names."""
+    if speeds:
+        cg.add_define("USE_COVER_SPEED")
+        table = cg.shared_progmem_array("cover_speeds", cg.const_char_ptr, speeds)
+        cg.add(var.set_supported_speeds_static(table, len(speeds)))
+
+
 @setup_entity("cover")
 async def setup_cover_core_(var: MockObj, config: ConfigType) -> None:
     setup_device_class(config)
@@ -245,9 +276,57 @@ COVER_ACTION_SCHEMA = maybe_simple_id(
 )
 
 
+COVER_MOVE_ACTION_SCHEMA = maybe_simple_id(
+    {
+        cv.Required(CONF_ID): cv.use_id(Cover),
+        cv.Optional(CONF_SPEED): cv.templatable(cv.string_strict),
+    }
+)
+
+
+def _register_speed_action(
+    name: str,
+    schema: cv.Schema,
+    *fields: automation.ApplyField | automation.ApplyCall,
+) -> None:
+    """Register an apply action with a speed key; a set speed compiles the speed support."""
+    builder = automation.apply_action_builder(
+        name,
+        schema,
+        *fields,
+        automation.ApplyField(
+            CONF_SPEED,
+            "set_speed",
+            cg.std_string,
+            const_fn=automation.literal_with_length,
+        ),
+        call="make_call",
+    )
+
+    async def action_to_code(
+        config: ConfigType,
+        action_id: ID,
+        template_arg: cg.TemplateArguments,
+        args: TemplateArgsType,
+    ) -> MockObj:
+        if CONF_SPEED in config:
+            cg.add_define("USE_COVER_SPEED")
+        return await builder(config, action_id, template_arg, args)
+
+    automation.register_action(name, automation.ApplyAction, schema, synchronous=True)(
+        action_to_code
+    )
+
+
 for _name, _command in (
     ("cover.open", "set_command_open()"),
     ("cover.close", "set_command_close()"),
+):
+    _register_speed_action(
+        _name, COVER_MOVE_ACTION_SCHEMA, automation.ApplyCall(_command)
+    )
+
+for _name, _command in (
     ("cover.stop", "set_command_stop()"),
     ("cover.stop_tilt", "set_command_stop_tilt()"),
     ("cover.toggle", "set_command_toggle()"),
@@ -265,13 +344,14 @@ COVER_CONTROL_ACTION_SCHEMA = cv.Schema(
         cv.Exclusive(CONF_STATE, "pos"): cv.templatable(validate_cover_state),
         cv.Exclusive(CONF_POSITION, "pos"): cv.templatable(cv.percentage),
         cv.Optional(CONF_TILT): cv.templatable(cv.percentage),
+        cv.Optional(CONF_SPEED): cv.templatable(cv.string_strict),
     }
 )
 
 
 # CONF_STATE and CONF_POSITION are cv.Exclusive in the schema, so at most
 # one is present and both dispatch to set_position.
-automation.register_apply_action(
+_register_speed_action(
     "cover.control",
     COVER_CONTROL_ACTION_SCHEMA,
     automation.ApplyField(CONF_STOP, "set_stop", cg.bool_),
@@ -279,7 +359,6 @@ automation.register_apply_action(
     automation.ApplyField(CONF_STATE, "set_position", cg.float_),
     automation.ApplyField(CONF_POSITION, "set_position", cg.float_),
     automation.ApplyField(CONF_TILT, "set_tilt", cg.float_),
-    call="make_call",
 )
 
 

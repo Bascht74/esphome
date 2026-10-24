@@ -485,6 +485,11 @@ uint8_t *ListEntitiesCoverResponse::encode_msg(const void *self, uint8_t *__rest
 #endif
   pos = ProtoEncode::encode_bool(pos PROTO_ENCODE_DEBUG_ARG, 14, msg.supports_stop_tilt);
   pos = ProtoEncode::encode_bool(pos PROTO_ENCODE_DEBUG_ARG, 15, msg.supports_toggle);
+#ifdef USE_COVER_SPEED
+  for (const char *it : *msg.supported_speeds) {
+    pos = ProtoEncode::encode_string_force(pos PROTO_ENCODE_DEBUG_ARG, 16, it, strlen(it));
+  }
+#endif
   return pos;
 }
 uint32_t ListEntitiesCoverResponse::calc_size_msg(const void *self) {
@@ -508,6 +513,13 @@ uint32_t ListEntitiesCoverResponse::calc_size_msg(const void *self) {
 #endif
   size += ProtoSize::calc_bool(1, msg.supports_stop_tilt);
   size += ProtoSize::calc_bool(1, msg.supports_toggle);
+#ifdef USE_COVER_SPEED
+  if (!msg.supported_speeds->empty()) {
+    for (const char *it : *msg.supported_speeds) {
+      size += ProtoSize::calc_length_force(2, strlen(it));
+    }
+  }
+#endif
   return size;
 }
 uint8_t *CoverStateResponse::encode_msg(const void *self, uint8_t *__restrict__ pos PROTO_ENCODE_DEBUG_PARAM) {
@@ -570,6 +582,16 @@ void CoverCommandRequest::decode_field(void *self, uint32_t tag, const uint8_t *
     case proto_tag(11, WIRE_TYPE_VARINT):
       msg.toggle = value.as_bool();
       break;
+#ifdef USE_COVER_SPEED
+    case proto_tag(12, WIRE_TYPE_VARINT):
+      msg.has_speed = value.as_bool();
+      break;
+#endif
+#ifdef USE_COVER_SPEED
+    case proto_tag(13, WIRE_TYPE_LENGTH_DELIMITED):
+      msg.speed = StringRef(value.data(), value.size());
+      break;
+#endif
     default:
       break;
   }

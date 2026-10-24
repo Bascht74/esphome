@@ -911,7 +911,7 @@ class BinarySensorStateResponse final : public StateResponseProtoMessage {
 class ListEntitiesCoverResponse final : public InfoResponseProtoMessage {
  public:
   static constexpr uint16_t MESSAGE_TYPE = 13;
-  static constexpr uint8_t ESTIMATED_SIZE = 61;
+  static constexpr uint8_t ESTIMATED_SIZE = 81;
 #ifdef HAS_PROTO_MESSAGE_DUMP
   const LogString *message_name() const override { return LOG_STR("list_entities_cover_response"); }
 #endif
@@ -922,6 +922,9 @@ class ListEntitiesCoverResponse final : public InfoResponseProtoMessage {
   bool supports_stop{false};
   bool supports_stop_tilt{false};
   bool supports_toggle{false};
+#ifdef USE_COVER_SPEED
+  const ConstVector<const char *, true> *supported_speeds{};
+#endif
   static uint8_t *encode_msg(const void *self, uint8_t *pos PROTO_ENCODE_DEBUG_PARAM);
   uint8_t *encode(ProtoWriteBuffer &buffer PROTO_ENCODE_DEBUG_PARAM) const {
     return encode_msg(this, buffer.get_pos() PROTO_ENCODE_DEBUG_ARG);
@@ -959,7 +962,7 @@ class CoverStateResponse final : public StateResponseProtoMessage {
 class CoverCommandRequest final : public CommandProtoMessage {
  public:
   static constexpr uint16_t MESSAGE_TYPE = 30;
-  static constexpr uint8_t ESTIMATED_SIZE = 29;
+  static constexpr uint8_t ESTIMATED_SIZE = 40;
 #ifdef HAS_PROTO_MESSAGE_DUMP
   const LogString *message_name() const override { return LOG_STR("cover_command_request"); }
 #endif
@@ -970,6 +973,12 @@ class CoverCommandRequest final : public CommandProtoMessage {
   bool stop{false};
   bool stop_tilt{false};
   bool toggle{false};
+#ifdef USE_COVER_SPEED
+  bool has_speed{false};
+#endif
+#ifdef USE_COVER_SPEED
+  StringRef speed{};
+#endif
   void decode(const uint8_t *buffer, size_t length) {
     ProtoDecodableMessage::decode_fields(this, buffer, length, &decode_field);
   }

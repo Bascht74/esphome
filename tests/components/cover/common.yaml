@@ -1,0 +1,23 @@
+api:
+
+cover:
+  - platform: template
+    id: speed_test_cover
+    name: Speed Test Cover
+    optimistic: true
+
+esphome:
+  on_boot:
+    # A platform sets its speeds at codegen; the lambda stands in for one here
+    - lambda: |-
+        static const char *const SPEEDS[] = {"slow", "fast"};
+        id(speed_test_cover).set_supported_speeds_static(SPEEDS, 2);
+        ESP_LOGD("test", "%u speeds", (unsigned) id(speed_test_cover).get_supported_speeds().size());
+    - cover.open:
+        id: speed_test_cover
+        speed: fast
+    - cover.close: speed_test_cover
+    - cover.control:
+        id: speed_test_cover
+        position: 50%
+        speed: !lambda 'return std::string("slow");'

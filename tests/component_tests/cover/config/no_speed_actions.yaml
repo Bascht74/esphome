@@ -1,0 +1,16 @@
+esphome:
+  name: test
+  on_boot:
+    - cover.open: blind
+    - cover.control:
+        id: blind
+        position: 50%
+
+esp8266:
+  board: esp01_1m
+
+cover:
+  - platform: template
+    id: blind
+    name: Blind
+    optimistic: true

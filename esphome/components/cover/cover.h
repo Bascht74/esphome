@@ -5,6 +5,7 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include "esphome/core/preferences.h"
+#include "esphome/core/string_ref.h"
 
 #include "cover_traits.h"
 
@@ -12,6 +13,11 @@ namespace esphome::cover {
 
 static constexpr float COVER_OPEN = 1.0f;
 static constexpr float COVER_CLOSED = 0.0f;
+
+#ifdef USE_COVER_SPEED
+/// Speed names of a cover: a codegen table in flash (see ConstVector).
+using CoverSpeeds = ConstVector<const char *, true>;
+#endif
 
 #define LOG_COVER(prefix, type, obj) \
   if (log_entity_header(TAG, prefix, LOG_STR_LITERAL(type), (obj))) { \
@@ -48,6 +54,12 @@ class CoverCall {
   CoverCall &set_stop(bool stop);
   /// Set whether this cover call should stop the cover tilt.
   CoverCall &set_stop_tilt(bool stop_tilt);
+#ifdef USE_COVER_SPEED
+  /// Set the speed by name; an empty name means the cover's default speed, an unsupported one is dropped.
+  CoverCall &set_speed(const char *speed, size_t len);
+  CoverCall &set_speed(const char *speed);
+  CoverCall &set_speed(const std::string &speed) { return this->set_speed(speed.data(), speed.size()); }
+#endif
 
   /// Perform the cover call.
   void perform();
@@ -57,6 +69,10 @@ class CoverCall {
   bool get_stop_tilt() const { return this->stop_tilt_; }
   const optional<float> &get_tilt() const;
   const optional<bool> &get_toggle() const;
+#ifdef USE_COVER_SPEED
+  /// The speed of this move, an entry of the cover's speed list; empty means the default speed.
+  StringRef get_speed() const { return StringRef::from_maybe_nullptr(this->speed_); }
+#endif
 
  protected:
   void validate_();
@@ -67,6 +83,9 @@ class CoverCall {
   optional<float> position_{};
   optional<float> tilt_{};
   optional<bool> toggle_{};
+#ifdef USE_COVER_SPEED
+  const char *speed_{nullptr};
+#endif
 };
 
 /// Struct used to store the restored state of a cover
@@ -143,6 +162,15 @@ class Cover : public EntityBase {
 
   virtual CoverTraits get_traits() = 0;
 
+#ifdef USE_COVER_SPEED
+  /// Codegen only: points at a table that outlives the cover (see ConstVector::assign_static).
+  void set_supported_speeds_static(const char *const *speeds, size_t count) {
+    this->supported_speeds_.assign_static(speeds, count);
+  }
+  /// The speeds this cover supports; empty when it has none.
+  const CoverSpeeds &get_supported_speeds() const { return this->supported_speeds_; }
+#endif
+
   /// Helper method to check if the cover is fully open. Equivalent to comparing .position against 1.0
   bool is_fully_open() const { return this->position == COVER_OPEN; }
   /// Helper method to check if the cover is fully closed. Equivalent to comparing .position against 0.0
@@ -158,6 +186,9 @@ class Cover : public EntityBase {
   LazyCallbackManager<void()> state_callback_{};
 
   ESPPreferenceObject rtc_;
+#ifdef USE_COVER_SPEED
+  CoverSpeeds supported_speeds_;
+#endif
 };
 
 }  // namespace esphome::cover

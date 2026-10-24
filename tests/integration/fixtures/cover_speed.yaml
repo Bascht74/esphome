@@ -1,0 +1,40 @@
+esphome:
+  name: cover-speed-test
+host:
+api:
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: EXTERNAL_COMPONENT_PATH
+
+cover:
+  - platform: mock_speed_cover
+    name: "Speed Cover"
+    id: speed_cover
+  - platform: template
+    name: "Plain Cover"
+    id: plain_cover
+    optimistic: true
+
+button:
+  - platform: template
+    name: "Open Slow"
+    on_press:
+      - cover.open:
+          id: speed_cover
+          speed: slow
+  # The short form without a speed stays valid and uses the default speed
+  - platform: template
+    name: "Close Default"
+    on_press:
+      - cover.close: speed_cover
+  - platform: template
+    name: "Half Fast"
+    on_press:
+      - cover.control:
+          id: speed_cover
+          position: 50%
+          speed: !lambda 'return std::string("fast");'
