@@ -59,6 +59,7 @@ bool Nextion::send_command_(const std::string &command) {
   const uint32_t now = App.get_loop_component_start_time();
   if (!this->connection_state_.ignore_is_setup_ && !this->command_pacer_.can_send(now)) {
     ESP_LOGN(TAG, "Command spacing: delaying '%s'", command.c_str());
+    this->plan_pacer_wake_(this->command_pacer_.remaining(now));
     return false;
   }
 #endif  // USE_NEXTION_COMMAND_SPACING
@@ -403,25 +404,16 @@ void Nextion::loop() {
 
 #ifdef USE_NEXTION_COMMAND_SPACING
 void Nextion::process_pending_in_queue_() {
-#ifdef USE_NEXTION_MAX_COMMANDS_PER_LOOP
-  size_t commands_sent = 0;
-#endif  // USE_NEXTION_MAX_COMMANDS_PER_LOOP
-
   for (auto *item : this->nextion_queue_) {
     if (item == nullptr || item->pending_command.empty()) {
       continue;  // Already sent, waiting for ACK — skip, don't stop
     }
 
-#ifdef USE_NEXTION_MAX_COMMANDS_PER_LOOP
-    if (++commands_sent > this->max_commands_per_loop_) {
-      ESP_LOGV(TAG, "Pending cmds: loop limit reached, deferring");
+    // The next loop pass can be up to loop_interval away; a timeout sends the command once the spacing has elapsed
+    const uint32_t wait_ms = this->command_pacer_.remaining(App.get_loop_component_start_time());
+    if (wait_ms > 0) {
+      this->plan_pacer_wake_(wait_ms);
       break;
-    }
-#endif  // USE_NEXTION_MAX_COMMANDS_PER_LOOP
-
-    const uint32_t now = App.get_loop_component_start_time();
-    if (!this->command_pacer_.can_send(now)) {
-      break;  // Spacing not elapsed, stop for this loop iteration
     }
 
     if (!this->send_command_(item->pending_command)) {
@@ -430,6 +422,19 @@ void Nextion::process_pending_in_queue_() {
     item->pending_command.clear();
     ESP_LOGVV(TAG, "Pending cmd sent: %s", item->component->get_variable_name().c_str());
   }
+}
+
+void Nextion::plan_pacer_wake_(uint32_t wait_ms) {
+  // A wake-up that is already planned is never late, because the time the next command may go out only moves
+  // later; if it comes early, it plans again
+  if (this->connection_state_.pacer_wake_planned_) {
+    return;
+  }
+  this->connection_state_.pacer_wake_planned_ = true;
+  this->set_timeout(wait_ms, [this]() {
+    this->connection_state_.pacer_wake_planned_ = false;
+    this->process_pending_in_queue_();
+  });
 }
 #endif  // USE_NEXTION_COMMAND_SPACING
 
