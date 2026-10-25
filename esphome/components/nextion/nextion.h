@@ -62,7 +62,13 @@ class NextionCommandPacer {
    *            for consistency with the rest of the queue timing).
    * @return true if the spacing interval has elapsed since the last command was sent.
    */
-  bool can_send(uint32_t now) const { return (now - last_command_time_) >= spacing_ms_; }
+  bool can_send(uint32_t now) const { return this->remaining(now) == 0; }
+
+  /// Milliseconds until can_send(now) allows the next command, 0 if it allows one now
+  uint32_t remaining(uint32_t now) const {
+    const uint32_t elapsed = now - this->last_command_time_;
+    return elapsed >= this->spacing_ms_ ? 0 : this->spacing_ms_ - elapsed;
+  }
 
   /**
    * @brief Record the transmit timestamp for the most recently sent command.
@@ -1454,7 +1460,8 @@ class Nextion final : public NextionBase, public PollingComponent, public uart::
    * pending command exists, it attempts to send the command. Once successfully sent,
    * the pending command is cleared and the queue item continues normal processing.
    *
-   * Called from loop() to retry sending commands that were delayed by spacing.
+   * Called from loop() to retry sending commands that were delayed by spacing, and from a timeout
+   * when the spacing has elapsed before the next loop pass.
    */
   void process_pending_in_queue_();
 

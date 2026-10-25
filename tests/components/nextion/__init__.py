@@ -13,11 +13,11 @@ def override_manifest(manifest: ComponentManifestOverride) -> None:
             deps.append(dep)
     manifest.dependencies = deps
 
-    # The command queue ordering code under test is gated on
-    # USE_NEXTION_COMMAND_SPACING, which the component only defines when
-    # command_spacing is configured. Define it here so the C++ unit test build
-    # compiles those paths.
+    # The command queue code under test is gated on USE_NEXTION_COMMAND_SPACING
+    # and USE_NEXTION_MAX_COMMANDS_PER_LOOP, which the component only defines
+    # when command_spacing and max_commands_per_loop are configured
     async def to_code_testing(config: ConfigType) -> None:
         cg.add_define("USE_NEXTION_COMMAND_SPACING")
+        cg.add_define("USE_NEXTION_MAX_COMMANDS_PER_LOOP")
 
     manifest.to_code = to_code_testing

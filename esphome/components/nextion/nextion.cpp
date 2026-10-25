@@ -50,6 +50,10 @@ void Nextion::setup() {
   this->connection_state_.ignore_is_setup_ = false;
 }
 
+#ifdef USE_NEXTION_COMMAND_SPACING
+static constexpr uint32_t PACER_WAKE_TIMEOUT_ID = 0;
+#endif  // USE_NEXTION_COMMAND_SPACING
+
 bool Nextion::send_command_(const std::string &command) {
   if (!this->connection_state_.ignore_is_setup_ && !this->is_setup()) {
     return false;
@@ -59,6 +63,8 @@ bool Nextion::send_command_(const std::string &command) {
   const uint32_t now = App.get_loop_component_start_time();
   if (!this->connection_state_.ignore_is_setup_ && !this->command_pacer_.can_send(now)) {
     ESP_LOGN(TAG, "Command spacing: delaying '%s'", command.c_str());
+    this->set_timeout(PACER_WAKE_TIMEOUT_ID, this->command_pacer_.remaining(now),
+                      [this]() { this->process_pending_in_queue_(); });
     return false;
   }
 #endif  // USE_NEXTION_COMMAND_SPACING
@@ -412,17 +418,20 @@ void Nextion::process_pending_in_queue_() {
       continue;  // Already sent, waiting for ACK — skip, don't stop
     }
 
+    // Before the loop limit, so a held-back command always plans a wake-up for when the spacing has elapsed;
+    // the next loop pass can be up to loop_interval away
+    const uint32_t wait_ms = this->command_pacer_.remaining(App.get_loop_component_start_time());
+    if (wait_ms > 0) {
+      this->set_timeout(PACER_WAKE_TIMEOUT_ID, wait_ms, [this]() { this->process_pending_in_queue_(); });
+      break;
+    }
+
 #ifdef USE_NEXTION_MAX_COMMANDS_PER_LOOP
     if (++commands_sent > this->max_commands_per_loop_) {
       ESP_LOGV(TAG, "Pending cmds: loop limit reached, deferring");
       break;
     }
 #endif  // USE_NEXTION_MAX_COMMANDS_PER_LOOP
-
-    const uint32_t now = App.get_loop_component_start_time();
-    if (!this->command_pacer_.can_send(now)) {
-      break;  // Spacing not elapsed, stop for this loop iteration
-    }
 
     if (!this->send_command_(item->pending_command)) {
       break;  // Unexpected send failure, stop
