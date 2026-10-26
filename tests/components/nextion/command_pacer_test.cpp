@@ -12,19 +12,32 @@
 namespace esphome::nextion::testing {
 
 // Explicit instantiation skips access checks, which lets the test run the pending sends the way
-// Nextion::loop() does, without making them public
-template<void (Nextion::*P)(), void (Nextion::*R)(bool), bool NextionBase::*U> struct PacerAccess {
+// Nextion::loop() does, and handle an answer the way an 0x01 from the display does, without making them public
+template<void (Nextion::*P)(), void (Nextion::*R)(bool), bool (Nextion::*A)(bool), bool NextionBase::*U>
+struct PacerAccess {
   friend void send_pending(Nextion &nextion) { (nextion.*P)(); }
   friend void clear_queue(Nextion &nextion) { (nextion.*R)(false); }
+  friend void answer_oldest(Nextion &nextion) { (nextion.*A)(true); }
   friend void mark_ready(Nextion &nextion) { nextion.*U = true; }
 };
 void send_pending(Nextion &nextion);
 void clear_queue(Nextion &nextion);
+void answer_oldest(Nextion &nextion);
 void mark_ready(Nextion &nextion);
-template struct PacerAccess<&Nextion::process_pending_in_queue_, &Nextion::reset_, &Nextion::is_setup_>;
+template struct PacerAccess<&Nextion::process_pending_in_queue_, &Nextion::reset_, &Nextion::remove_from_q_,
+                            &Nextion::is_setup_>;
 
 /// Sets the loop clock the way the main loop does at the start of a component's loop()
 static void start_loop_pass() { LoopBlockingGuard{nullptr, nullptr, millis()}; }
+
+/// The same at a chosen time, for a test that runs only loop passes and no timer
+static void start_loop_pass_at(uint32_t now_ms) { LoopBlockingGuard{nullptr, nullptr, now_ms}; }
+
+/// A sensor the component asks for its value with "get"
+class QueriedSensor : public NextionComponentBase {
+ public:
+  NextionQueueType get_queue_type() const override { return NextionQueueType::SENSOR; }
+};
 
 /// Records each command the component writes; the display never answers
 class RecordingUART : public uart::UARTComponent {
@@ -81,8 +94,14 @@ class CommandPacer : public ::testing::Test {
     App.scheduler.call(millis());
   }
 
+  static bool wake_up_planned() {
+    App.scheduler.process_to_add();
+    return App.scheduler.next_schedule_in(millis()).has_value();
+  }
+
   RecordingUART uart_;
   Nextion nextion_;
+  QueriedSensor sensor_;  // outlives the queue, which TearDown() clears
 };
 
 // command_spacing sets the minimum time between two commands. A command the pacer holds back must go out
@@ -148,6 +167,145 @@ TEST_F(CommandPacer, EachWakeUpSendsOneCommandAndPlansTheNext) {
   run_wake_up();
   EXPECT_EQ(this->uart_.commands, (std::vector<std::string>{"page 1", "vis b0,1", "vis b1,1"}));
   EXPECT_FALSE(App.scheduler.next_schedule_in(millis()).has_value());
+}
+
+// While the display builds a page it reads nothing, so every command sent then waits in its serial buffer of
+// about 1 KB. The wake-ups stop at 16 unanswered commands, and each answer lets one more out.
+TEST_F(CommandPacer, BusyDisplayGetsAtMost16UnansweredCommands) {
+  this->nextion_.set_command_spacing(1);
+
+  // One loop pass queues 20 commands: the first goes out, 19 wait
+  start_loop_pass();
+  for (int i = 0; i < 20; i++)
+    this->nextion_.send_command("vis b0,1");
+
+  // The wake-ups send 1 ms apart until 16 are unanswered, then plan no further wake-up
+  for (int i = 0; i < 20 && wake_up_planned(); i++)
+    run_wake_up();
+  EXPECT_EQ(this->uart_.commands.size(), 16u);
+  EXPECT_FALSE(wake_up_planned());
+
+  // The display answers the oldest command, and the next loop pass sends one more
+  answer_oldest(this->nextion_);
+  delay(1);
+  start_loop_pass();
+  send_pending(this->nextion_);
+  EXPECT_EQ(this->uart_.commands.size(), 17u);
+}
+
+// A new command or query also waits while 16 commands are unanswered, even when the pacer would let it out
+TEST_F(CommandPacer, NewCommandWaitsWhile16AreUnanswered) {
+  this->nextion_.set_command_spacing(1);
+
+  // 16 commands, each in its own loop pass 1 ms after the last, so each goes out right away
+  for (int i = 0; i < 16; i++) {
+    delay(1);
+    start_loop_pass();
+    this->nextion_.send_command("vis b0,1");
+  }
+  EXPECT_EQ(this->uart_.commands.size(), 16u);
+
+  // The display has answered none of them, so the next command and the query wait
+  delay(1);
+  start_loop_pass();
+  this->nextion_.send_command("vis b1,1");
+  this->nextion_.add_to_get_queue(&this->sensor_);
+  EXPECT_EQ(this->uart_.commands.size(), 16u);
+
+  // The display answers the oldest command, and the next loop pass sends the command that waited longest
+  answer_oldest(this->nextion_);
+  delay(1);
+  start_loop_pass();
+  send_pending(this->nextion_);
+  EXPECT_EQ(this->uart_.commands.size(), 17u);
+  EXPECT_EQ(this->uart_.commands.back(), "vis b1,1");
+}
+
+// An answer can be lost, for example when the display reports a full buffer (0x24) or restarts on its own.
+// Sending then waits for it at most 1 s, counted from when the oldest unanswered command was queued. After that
+// the command is taken as lost and leaves the queue.
+TEST_F(CommandPacer, LostAnswersHoldSendingAtMost1s) {
+  this->nextion_.set_command_spacing(1);
+
+  // From 1000 ms on, 16 commands go out 1 ms apart, and the display answers none of them
+  for (uint32_t i = 0; i < 16; i++) {
+    start_loop_pass_at(1000 + i);
+    this->nextion_.send_command("vis b0,1");
+  }
+  start_loop_pass_at(1016);
+  this->nextion_.send_command("vis b1,1");
+  EXPECT_EQ(this->uart_.commands.size(), 16u);
+
+  // At 1500 ms the new command still waits
+  start_loop_pass_at(1500);
+  send_pending(this->nextion_);
+  EXPECT_EQ(this->uart_.commands.size(), 16u);
+
+  // At 2000 ms the first command has waited 1 s, so the loop pass sends the new one in its place
+  start_loop_pass_at(2000);
+  send_pending(this->nextion_);
+  EXPECT_EQ(this->uart_.commands.size(), 17u);
+  EXPECT_EQ(this->uart_.commands.back(), "vis b1,1");
+  EXPECT_EQ(this->nextion_.queue_size(), 16u);
+
+  // At 2001 ms the second command has waited 1 s, so a further command goes out right away in its place
+  start_loop_pass_at(2001);
+  this->nextion_.send_command("vis b2,1");
+  EXPECT_EQ(this->uart_.commands.size(), 18u);
+  EXPECT_EQ(this->nextion_.queue_size(), 16u);
+}
+
+// An answer lost earlier must not switch the limit off for the next page: its entry is taken as lost and removed
+TEST_F(CommandPacer, LostAnswerFromEarlierKeepsTheLimit) {
+  this->nextion_.set_command_spacing(1);
+
+  // At 1000 ms one command goes out, and its answer is lost
+  start_loop_pass_at(1000);
+  this->nextion_.send_command("dim=50");
+
+  // At 3000 ms a page queues 30 commands, and the display answers none of them while it builds the page.
+  // Loop passes follow 1 ms apart for 300 ms.
+  start_loop_pass_at(3000);
+  for (int i = 0; i < 30; i++)
+    this->nextion_.send_command("vis b0,1");
+  for (uint32_t now = 3001; now <= 3300; now++) {
+    start_loop_pass_at(now);
+    send_pending(this->nextion_);
+  }
+
+  // Only 16 of the page's commands went out. The queue holds them and the 14 that wait; the old entry is gone.
+  EXPECT_EQ(this->uart_.commands.size(), 1u + 16u);
+  EXPECT_EQ(this->nextion_.queue_size(), 30u);
+}
+
+// After a full buffer (0x24) the answers to 16 commands are lost. Once the display answers again, a page goes out
+// as fast as without the loss instead of waiting 1 s for the lost answers.
+TEST_F(CommandPacer, PageAfterLostAnswersIsNotSlowedDown) {
+  this->nextion_.set_command_spacing(1);
+
+  // From 1000 ms on, 16 commands go out 1 ms apart, and all their answers are lost
+  for (uint32_t i = 0; i < 16; i++) {
+    start_loop_pass_at(1000 + i);
+    this->nextion_.send_command("vis b0,1");
+  }
+
+  // At 3000 ms a page queues 48 commands. Loop passes follow 1 ms apart, and at the start of each the display
+  // answers every command sent before it.
+  start_loop_pass_at(3000);
+  for (int i = 0; i < 48; i++)
+    this->nextion_.send_command("vis b1,1");
+  size_t answered = 16;  // the 16 lost ones never get an answer
+  uint32_t now = 3000;
+  while (this->uart_.commands.size() < 16 + 48 && now < 5000) {
+    now++;
+    start_loop_pass_at(now);
+    for (; answered < this->uart_.commands.size(); answered++)
+      answer_oldest(this->nextion_);
+    send_pending(this->nextion_);
+  }
+
+  // One command per loop pass: the last of the 48 goes out 47 ms after the first
+  EXPECT_EQ(now, 3047u);
 }
 
 }  // namespace esphome::nextion::testing

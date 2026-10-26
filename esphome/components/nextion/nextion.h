@@ -1455,16 +1455,20 @@ class Nextion final : public NextionBase, public PollingComponent, public uart::
   /// Plans a timeout in wait_ms that runs process_pending_in_queue_(), unless one is already planned
   void plan_pacer_wake_(uint32_t wait_ms);
 
+  /// Whether sending waits for answers because `unanswered` sent commands reach the limit. A sent entry at the front
+  /// of the queue whose answer is overdue is taken as lost and removed, and `unanswered` is lowered for each one.
+  bool must_wait_for_answers_(size_t &unanswered);
+
   /**
-   * @brief Process any commands in the queue that are pending due to command spacing
+   * @brief Process any commands in the queue that are pending due to command spacing or unanswered commands
    *
    * This method checks if the first item in the nextion_queue_ has a pending command
    * that was previously blocked by command spacing. If spacing now allows and a
    * pending command exists, it attempts to send the command. Once successfully sent,
    * the pending command is cleared and the queue item continues normal processing.
    *
-   * Called from loop() to retry sending commands that were delayed by spacing, and from a timeout
-   * when the spacing has elapsed before the next loop pass.
+   * Called from loop() to retry sending commands that were delayed by spacing or because 16 commands
+   * were unanswered, and from a timeout when the spacing has elapsed before the next loop pass.
    */
   void process_pending_in_queue_();
 
