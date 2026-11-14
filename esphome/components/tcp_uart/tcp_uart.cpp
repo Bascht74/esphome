@@ -339,6 +339,8 @@ void TcpUart::pick_holder_(uint32_t now) {
 bool TcpUart::tx_drained_(uint32_t now) {
   Link &link = this->slot_(this->tx_slot_);
   if (link.flush_tx()) {
+    // Bytes that reach the last holder after the buffer emptied get a stall clock of their own.
+    this->tx_moved_ms_ = now;
     return true;
   }
   const uint16_t room = static_cast<uint16_t>(link.tx_free());

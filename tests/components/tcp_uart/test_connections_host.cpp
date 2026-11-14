@@ -507,6 +507,43 @@ TEST_F(TcpUartThreeSlots, ClientThatStopsReadingIsClosedAfterFiveSecondsWhileAno
   EXPECT_EQ(received(this->b_), "ok");
 }
 
+TEST_F(TcpUartThreeSlots, BytesThatStallLongAfterTheTurnGetTheirOwnFiveSeconds) {
+  // C asks and is answered at once: its turn ends at 1000 ms and the shared buffer is empty.
+  this->c_ = this->uart_.adopt_socket_pair(2);
+  send(this->c_, "1.");
+  this->wait_for_bytes(2);
+  const uint16_t turn_of_c = this->uart_.turn();
+  this->uart_.hold_turn();
+  EXPECT_EQ(this->read_all(), "1.");
+  this->write("ok");
+  this->uart_.release_turn();
+  this->loops(1);
+
+  // At 10000 ms the device sends C more than C takes, as C reads no more, and fills the buffer to the top. B asks.
+  this->at(10000);
+  this->loops(1);
+  const std::string block(1024, 'x');
+  for (int i = 0; i < 1000 && this->uart_.flush() == uart::UARTFlushResult::UART_FLUSH_RESULT_SUCCESS; i++) {
+    this->write(block.c_str());
+  }
+  this->write(std::string(this->uart_.available_for_write(), 'y').c_str());
+  send(this->b_, "hi");
+  this->deliver();
+
+  // The 5 s count from 10000 ms, not from the end of C's turn: at 14999 ms B still waits and C stays open.
+  this->at(14999);
+  this->deliver();
+  EXPECT_EQ(this->uart_.turn(), turn_of_c);
+  EXPECT_EQ(this->uart_.open_connections(), 3);
+
+  // At 15000 ms C is closed and B gets the turn.
+  this->at(15000);
+  this->loops(1);
+  EXPECT_EQ(this->uart_.open_connections(), 2);
+  EXPECT_FLOAT_EQ(this->disconnects_.state, 1);
+  EXPECT_EQ(this->read_all(), "hi");
+}
+
 // The two-client server with a 1000 ms idle timeout: a connection that moves no byte for 1000 ms is closed.
 // Clients A and B connected at 1000 ms.
 class TcpUartIdleTimeout : public TcpUartTwoClients {
